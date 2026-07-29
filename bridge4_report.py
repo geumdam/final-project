@@ -22,6 +22,9 @@ from __future__ import annotations
 
 import pandas as pd
 
+from bridge4_i18n import LABEL_NAME, SUMMARY, UI, VERDICT
+from bridge4_i18n import WHY as WHY_I18N
+
 LABELS = (
     "임금구성_불명확", "실근로시간_미기재", "수습조건_미기재", "숙식공제_불명확",
     "연장야간_조건미기재", "사회보험_미기재", "임금_미확정",
@@ -44,6 +47,10 @@ WHY = {
     "임금_미확정": "임금이 숫자로 정해지지 않았습니다. "
                "'면접 후 결정'이나 '내규에 따름'은 지원 전에 금액을 알 수 없다는 뜻입니다.",
 }
+
+# 호출부는 LANGUAGES[lang] 표기명('简体中文')을 넘긴다. 코드로 되돌리는 표.
+_NAME2CODE = {"한국어": "ko", "English": "en", "简体中文": "zh",
+              "Tiếng Việt": "vi", "日本語": "ja", "Español": "es"}
 
 # 월 소정근로시간. 주 40시간 × 4.345주 × 1.2(주휴) = 208.6h -> 관행상 209h
 MONTHLY_HOURS = 209
@@ -72,6 +79,32 @@ VERDICT_TEXT = {
             "비슷한 조건이라면 **월 {lo_m}만 ~ {hi_m}만원** (시급 {lo:,}~{hi:,}원) "
             "수준이니, 이 범위를 기준으로 면접에서 확인하세요."),
 }
+
+
+def _lang(lang_name: str) -> str:
+    """리포트가 받는 것은 표기명('简体中文')이라 코드로 되돌린다.
+
+    호출부가 LANGUAGES[lang] 을 넘기는 구조여서 코드가 바로 오지 않는다.
+    못 찾으면 한국어로 둔다 — 빈 화면보다 한국어가 낫다.
+    """
+    return _NAME2CODE.get((lang_name or "").strip(), "ko")
+
+
+def U(lang: str, key: str) -> str:
+    """리포트 문구. 해당 언어에 없으면 한국어로 되돌린다."""
+    v = (UI.get(lang) or {}).get(key)
+    return UI["ko"].get(key, key) if v is None else v
+
+
+def label_of(lang: str, l: str) -> str:
+    """근로조건 항목 이름을 사용자 언어로. 없으면 원래 이름."""
+    return (LABEL_NAME.get(lang) or {}).get(l) or (
+        LABEL_NAME["ko"].get(l) or l)
+
+
+def why_of(lang: str, l: str) -> str:
+    d = WHY_I18N.get(lang) or WHY_I18N["ko"]
+    return d.get(l) or WHY_I18N["ko"].get(l, "")
 
 
 def to_man(hourly: float | int) -> int:
@@ -121,9 +154,10 @@ def build_report(rec: pd.Series, pred: pd.Series, detection: dict | None,
                '예측'이라고 적으면 관측값을 추정값으로 오인하게 만든다.
     """
     OBS = basis == "obs"
-    HDR = "📊 1. [실측 기준] 알바 시급 비교" if OBS else "📊 1. [ML 기반] 적정 임금 진단"
-    RANGE = "같은 직종 실측 시급대" if OBS else "ML 예측 적정 범위"
-    BAND = "실측 80% 구간" if OBS else "80% 신뢰구간"
+    lang = _lang(lang_name)
+    HDR = U(lang, "sec1_obs") if OBS else U(lang, "sec1")
+    RANGE = U(lang, "ml_range_obs") if OBS else U(lang, "ml_range")
+    BAND = U(lang, "ml_ci_obs") if OBS else U(lang, "ml_ci")
     lo, mid, hi = int(pred["lo"]), int(pred["mid"]), int(pred["hi"])
     rel = str(pred["rel"])
     mw26 = int(meta["minimum_wage_2026"])
@@ -154,89 +188,94 @@ def build_report(rec: pd.Series, pred: pd.Series, detection: dict | None,
     # ── 1. ML ────────────────────────────────────────────────────────
     L.append(f"### {HDR}")
     L.append("")
+    RELN = U(lang, "rel_" + {"높음": "high", "보통": "mid",
+                             "낮음": "low", "매우낮음": "vlow"}.get(rel, "mid"))
     if rel == "매우낮음":
-        L.append(f"- **{RANGE}**: 제시 보류 — 비슷한 조건의 공고가 부족해 "
-                 "신뢰할 만한 범위를 내기 어렵습니다.")
-        L.append(f"- **참고 중앙 추정**: 월 약 {to_man(mid)}만원 (시급 {mid:,}원) "
-                 f"*(신뢰도 매우낮음)*")
+        L.append(f"- **{RANGE}**: {U(lang, 'ml_hold')}")
+        L.append(f"- **{U(lang, 'ml_mid')}**: {U(lang, 'mon')} {to_man(mid)}"
+                 f"{U(lang, 'man')} ({U(lang, 'hourly')} {mid:,}{U(lang, 'won')})"
+                 f" *({U(lang, 'reliab')} {RELN})*")
     elif rel == "낮음":
-        L.append(f"- **{RANGE}**: 월 약 **{to_man(mid)}만원** (시급 {mid:,}원) "
-                 f"*(비슷한 조건이 적어 구간 대신 중앙값만 제시)*")
+        L.append(f"- **{RANGE}**: {U(lang, 'mon')} **{to_man(mid)}{U(lang, 'man')}**"
+                 f" ({U(lang, 'hourly')} {mid:,}{U(lang, 'won')})"
+                 f" *({U(lang, 'ml_mid_only')})*")
     else:
-        L.append(f"- **{RANGE}**: "
-                 f"**월 {to_man(lo)}만원 ~ {to_man(hi)}만원** ({BAND})")
-        L.append(f"  · 시급 환산 {lo:,} ~ {hi:,}원 · 신뢰도 **{rel}**")
+        L.append(f"- **{RANGE}**: **{U(lang, 'mon')} {to_man(lo)} ~ "
+                 f"{to_man(hi)}{U(lang, 'man')}** ({BAND})")
+        L.append(f"  · {U(lang, 'hourly')} {lo:,} ~ {hi:,}{U(lang, 'won')}"
+                 f" · {U(lang, 'reliab')} **{RELN}**")
 
     if amt is not None:
-        s = f"- **공고 제시 임금**: {kind} {amt:,.0f}원"
+        kindn = U(lang, "k_" + {"시급": "hour", "월급": "month", "연봉": "year",
+                                "일급": "day", "주급": "week"}.get(kind, "month")) \
+            if kind else ""
+        s = f"- **{U(lang, 'posted')}**: {kindn} {amt:,.0f}{U(lang, 'won')}"
         if real is not None:
-            s += (f" → 주휴 포함 환산 **월 약 {to_man(real)}만원** "
-                  f"(시급 {real:,.0f}원)")
+            s += (f" → {U(lang, 'conv')} **{U(lang, 'mon')} {to_man(real)}"
+                  f"{U(lang, 'man')}** ({U(lang, 'hourly')} {real:,.0f}"
+                  f"{U(lang, 'won')})")
         L.append(s)
     else:
-        L.append("- **공고 제시 임금**: 미표기")
+        L.append(f"- **{U(lang, 'posted')}**: {U(lang, 'not_posted')}")
 
-    title, body = VERDICT_TEXT[v]
+    title, body = (VERDICT.get(lang) or VERDICT["ko"])[v]
     L.append("")
-    L.append(f"- **제시 임금 평가**: **{title}**")
+    L.append(f"- **{U(lang, 'verdict')}**: **{title}**")
     L.append("  " + body.format(
         real=int(real) if real else 0,
         real_m=to_man(real) if real else 0,
         lo=lo, hi=hi, lo_m=to_man(lo), hi_m=to_man(hi), mw=mw26))
     if v not in ("위법소지", "미확정") and real is not None and real < mw27:
-        L.append(f"  > 참고: 2027년 최저임금은 시급 **{mw27:,}원** 입니다. "
-                 f"내년에는 인상되어야 하는 수준입니다.")
+        L.append("  > " + U(lang, "note_mw27").format(mw=mw27))
     L.append("")
-    L.append("  <sub>월 환산은 주휴 포함 월 소정근로시간 209시간 기준입니다. "
-             "실제 근무시간이 다르면 금액도 달라집니다.</sub>")
+    L.append(f"  <sub>{U(lang, 'note209')}</sub>")
     L.append("")
     L.append("---")
 
     # ── 2. LLM ───────────────────────────────────────────────────────
-    L.append("### 🔍 2. [LLM 기반] 근로조건 주의 항목 진단")
+    L.append(f"### {U(lang, 'sec2')}")
     L.append("")
 
     if detection is None:
-        L.append("아직 이 공고의 근로조건 진단 결과가 없습니다.")
+        L.append(U(lang, "no_detect"))
     elif detection.get("status") == "본문없음":
-        L.append("이 공고는 본문이 제공되지 않아 근로조건을 진단할 수 없습니다. "
-                 "수집한 공고의 약 39%가 본문을 제공하지 않습니다. "
-                 "**공고 원문을 직접 확인하고, 아래 임금 범위를 기준으로 면접에서 물어보세요.**")
+        L.append(U(lang, "no_body"))
     elif not flags:
-        L.append("✅ 7가지 항목에서 **주의할 점이 발견되지 않았습니다.** "
-                 "근로조건이 비교적 명확하게 적혀 있는 공고입니다.")
+        L.append(U(lang, "no_issue"))
     else:
         by = {c.get("항목"): c for c in checklist}
-        L.append(f"7가지 항목 중 **{len(flags)}개**에서 확인이 필요합니다.")
+        L.append(U(lang, "n_issue").format(n=len(flags)))
         L.append("")
         for i, l in enumerate(flags, 1):
             ev = _txt((detection["labels"].get(l) or {}).get("evidence"))
             c = by.get(l)
-            L.append(f"#### 💡 주의 항목 {i}: {l}")
+            L.append(f"#### 💡 {U(lang, 'item')} {i}: {label_of(lang, l)}")
             L.append("")
             if ev:
-                L.append(f"> 공고 원문: 「{ev}」")
+                # 인용은 번역하지 않는다 — 증거이므로 원문 그대로 둔다
+                L.append(f"> {U(lang, 'quote')}: 「{ev}」")
             else:
-                L.append("> 공고에 이 항목에 대한 언급이 아예 없습니다.")
+                L.append(f"> {U(lang, 'quote_none')}")
             L.append("")
-            L.append(f"- **왜 확인해야 하나요**: {WHY[l]}")
+            L.append(f"- **{U(lang, 'why')}**: {why_of(lang, l)}")
             if c and _txt(c.get("확인이유")):
-                L.append(f"- **AI의 설명 ({lang_name})**: {c['확인이유']}")
-            L.append("- **사장님께 물어볼 질문**:")
+                L.append(f"- **{U(lang, 'ai_expl')} ({lang_name})**: {c['확인이유']}")
+            L.append(f"- **{U(lang, 'ask')}**:")
             if c and _txt(c.get("한국어질문")):
-                L.append(f"  - 🇰🇷 **한국어**: \"{c['한국어질문']}\"")
+                # 한국어 질문은 그대로 — 사장님에게 보여주는 것이 목적이다
+                L.append(f"  - 🇰🇷 **{U(lang, 'ko_label')}**: \"{c['한국어질문']}\"")
                 if _txt(c.get("모국어질문")):
                     L.append(f"  - 🌐 **{lang_name}**: \"{c['모국어질문']}\"")
             else:
-                L.append(f"  - *({lang_name} 질문이 아직 생성되지 않았습니다. "
-                         f"사이드바에서 다른 언어를 선택해 보세요.)*")
+                L.append(f"  - *({U(lang, 'no_q')})*")
             if c and _txt(c.get("위험도")):
-                L.append(f"  - 중요도: **{c['위험도']}**")
+                L.append(f"  - {U(lang, 'importance')}: "
+                         f"**{U(lang, 'imp_' + {'높음': 'high', '보통': 'mid', '낮음': 'low'}.get(c['위험도'], 'mid'))}**")
             L.append("")
 
     etc = (detection or {}).get("기타") or []
     if etc:
-        L.append("#### 📎 그 밖에 확인할 점")
+        L.append(f"#### {U(lang, 'etc')}")
         for e in etc:
             L.append(f"- {e}")
         L.append("")
@@ -244,31 +283,29 @@ def build_report(rec: pd.Series, pred: pd.Series, detection: dict | None,
     L.append("---")
 
     # ── 3. 요약 ──────────────────────────────────────────────────────
-    L.append("### 🎯 3. 한눈에 보는 요약")
+    L.append(f"### {U(lang, 'sec3')}")
     L.append("")
-    one = {
-        "위법소지": f"환산 시급 {int(real or 0):,}원으로 **최저임금 미달 가능** — 반드시 확인",
-        "낮음": f"적정 범위(월 {to_man(lo)}~{to_man(hi)}만원)보다 **낮은 편**",
-        "적정": f"부산 동종 조건 평균(월 {to_man(lo)}~{to_man(hi)}만원) **수준에 부합**",
-        "높음": f"적정 범위(월 {to_man(lo)}~{to_man(hi)}만원)보다 **높음** — 근무 조건을 함께 확인",
-        "미확정": f"임금이 **정해지지 않음** — 월 {to_man(lo)}~{to_man(hi)}만원을 기준으로 면접에서 확인",
-    }[v]
-    L.append(f"- **임금 적정성**: {one}")
+    one = (SUMMARY.get(lang) or SUMMARY["ko"])[v].format(
+        real=int(real or 0), real_m=to_man(real) if real else 0,
+        lo_m=to_man(lo), hi_m=to_man(hi))
+    L.append(f"- **{U(lang, 's_wage')}**: {one}")
 
     if flags:
         risky = [c.get("항목") for c in checklist if c.get("위험도") == "높음"]
         top = [l for l in flags if l in risky] or flags
-        L.append(f"- **핵심 주의점**: {' · '.join(top[:2])}"
-                 + (f" (그 외 {len(flags) - len(top[:2])}건)" if len(flags) > 2 else ""))
+        names = " · ".join(label_of(lang, x) for x in top[:2])
+        more = (" (" + U(lang, "and_more").format(n=len(flags) - len(top[:2])) + ")"
+                if len(flags) > 2 else "")
+        L.append(f"- **{U(lang, 's_risk')}**: {names}{more}")
     elif detection and detection.get("status") == "본문없음":
-        L.append("- **핵심 주의점**: 본문이 없어 진단 불가 — 공고 원문을 직접 확인")
+        L.append(f"- **{U(lang, 's_risk')}**: {U(lang, 's_nobody')}")
     else:
-        L.append("- **핵심 주의점**: 없음")
+        L.append(f"- **{U(lang, 's_risk')}**: {U(lang, 's_none')}")
 
     n_q = len([c for c in checklist if _txt(c.get("한국어질문"))])
     if n_q:
-        L.append(f"- **다음 할 일**: 위 한국어 질문 **{n_q}개**를 지원 전에 채용 담당자에게 확인하세요. "
-                 f"괄호 안 한국어 단어를 손으로 가리키며 물어보면 됩니다.")
+        L.append(f"- **{U(lang, 's_todo_l')}**: "
+                 + U(lang, "s_todo").format(n=n_q))
     return "\n".join(L)
 
 
@@ -276,7 +313,8 @@ def build_questions_only(checklist: list[dict], lang_name: str) -> str:
     """면접장에서 그대로 보여줄 질문 목록만."""
     if not checklist:
         return ""
-    L = [f"### 📋 채용 담당자에게 보여줄 질문 ({lang_name})", ""]
+    lang = _lang(lang_name)
+    L = [f"### {U(lang, 'q_title')} ({lang_name})", ""]
     for i, c in enumerate([c for c in checklist if _txt(c.get("한국어질문"))], 1):
         L.append(f"**{i}. {c['한국어질문']}**")
         if _txt(c.get("모국어질문")):

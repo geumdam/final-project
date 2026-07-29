@@ -1017,13 +1017,9 @@ def main() -> None:
                     with st.expander(T(lang, "db_orig")):
                         st.text(b)
 
-                st.divider()
-                if st.session_state.get("t2_wid") != rec["wantedAuthNo"]:
-                    st.session_state["t2_wid"] = rec["wantedAuthNo"]
-                    st.session_state.pop("t2_hist", None)
-                chat_panel(build_chat_context(b, wage_ctx(p, rec), det,
-                                              txt(rec.get("근무시간항목"), ""),
-                                              rec_conditions(rec)), "t2", lang)
+                # Q&A 는 '공고 물어보기' 탭에만 둔다.
+                # 이 탭은 이미 진단해 둔 공고를 훑어보는 곳이고, 여기에도 대화창을
+                # 두면 같은 기능이 두 군데 흩어져 어디서 물어야 하는지 헷갈린다.
 
     # ── 탭 3: 성능 ────────────────────────────────────────────
     #
