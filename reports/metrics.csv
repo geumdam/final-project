@@ -1,0 +1,2 @@
+﻿n_train,n_features,coverage_pct,coverage_before_cqr_pct,width_median,q50_mae,q50_r2
+3674,19,81.3,56.86,3747,1573,0.2826
