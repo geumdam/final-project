@@ -110,6 +110,48 @@ def load_postings() -> pd.DataFrame:
 
 
 @st.cache_data(show_spinner=False)
+def load_private() -> tuple[pd.DataFrame, dict]:
+    """민간 공고(알바몬·알바천국)와 그 실측 시급 분위수.
+
+    없으면 빈 값을 돌려준다. 파일이 빠져도 앱은 고용24 만으로 그대로 돈다.
+    """
+    pq = DATA_DIR / "private_postings.parquet"
+    d = pd.read_parquet(pq) if pq.exists() else pd.DataFrame()
+    bj = DATA_DIR / "private_benchmark.json"
+    b = json.loads(bj.read_text(encoding="utf-8")) if bj.exists() else {}
+    return d, b
+
+
+def bench_interval(rec: pd.Series, bench: dict):
+    """민간 공고의 비교 기준을 실측 분위수로 만든다.
+
+    모델 예측(predict)과 같은 모양(lo/mid/hi/width/rel)을 돌려주므로
+    show_metrics · show_charts · build_report 를 고치지 않고 그대로 쓸 수 있다.
+
+    rel 은 표본 크기로만 정한다. 모델이 아니라 관측이므로 '높음' 은 쓰지 않는다.
+    표본이 얇으면 '매우낮음' 이 되어 기존 규칙대로 구간을 숨긴다.
+    """
+    if not bench:
+        return None, None
+    ks = txt(rec.get("ksco_code"), "")
+    b = (bench.get("직종") or {}).get(ks)
+    scope = "job"
+    if not b:
+        b, scope = bench.get("전체"), "all"
+    if not b:
+        return None, None
+    n = int(b["n"])
+    # 분위수 구간은 100건이면 q10/q90 이 안정된다. 150 으로 잡았더니 n=133 인
+    # 직종이 '낮음' 이 되어, 지표 카드는 구간을 보여주는데 리포트는
+    # "구간 대신 중앙값만 제시" 라고 적는 모순이 났다.
+    rel = "보통" if n >= 100 else ("낮음" if n >= 50 else "매우낮음")
+    p = pd.Series({"lo": float(b["q10"]), "mid": float(b["q50"]),
+                   "hi": float(b["q90"]),
+                   "width": float(b["q90"] - b["q10"]), "rel": rel})
+    return p, {"scope": scope, "n": n}
+
+
+@st.cache_data(show_spinner=False)
 def load_llm() -> tuple[pd.DataFrame | None, dict[str, pd.DataFrame]]:
     det = None
     p = LLM_DIR / "detect_predictions.csv"
@@ -572,6 +614,7 @@ def main() -> None:
 
     meta, boosters = load_model()
     posts = load_postings()
+    priv, bench = load_private()   # 민간 공고 — 없으면 빈 값
     det_df, chk = load_llm()
     reports = load_reports()
 
@@ -718,23 +761,44 @@ def main() -> None:
         else:
             has_det = set(det_df["wantedAuthNo"]) if det_df is not None else set()
             has_chk = set(chk[lang]["wantedAuthNo"]) if lang in chk else set()
-            c = st.columns([2, 1, 1])
+
+            # 출처를 먼저 고른다. 민간 공고는 비교 기준이 달라서(모델이 아니라
+            # 실측 분위수) 아래 로직이 갈라진다.
+            SRC = {"pub": T(lang, "src_pub")}
+            if not priv.empty:
+                SRC["priv"] = T(lang, "src_priv")
+            c = st.columns([2, 1, 1, 1])
             kw = c[0].text_input(T(lang, "db_search"), key="b_kw",
                                  placeholder=T(lang, "db_search_ph"))
-            gus = [T(lang, "db_all")] + sorted(x for x in posts["sigungu"].dropna().unique()
+            src = c[1].selectbox(T(lang, "src"), list(SRC),
+                                 format_func=lambda k: SRC[k], key="b_src")
+            base = priv if src == "priv" else posts
+
+            gus = [T(lang, "db_all")] + sorted(x for x in base["sigungu"].dropna().unique()
                                    if str(x).strip())
-            gu = c[1].selectbox(T(lang, "db_gu"), gus, key="b_gu")
-            SCOPE = {"db_s1": T(lang, "db_s1"), "db_s2": T(lang, "db_s2"),
-                     "db_s3": T(lang, "db_s3")}
-            only = c[2].selectbox(T(lang, "db_scope"), list(SCOPE),
-                                  format_func=lambda k: SCOPE[k], key="b_only")
-            v = posts
+            gu = c[2].selectbox(T(lang, "db_gu"), gus, key="b_gu")
+            if src == "priv":
+                # 민간에는 진단 결과가 아직 없다. 대신 본문 유무로 나눈다 —
+                # 본문이 이미지뿐인 공고가 36% 라서 이 구분이 실질적이다.
+                SCOPE = {"pv_a": T(lang, "db_all"), "pv_b": T(lang, "db_s3")}
+                only = c[3].selectbox(T(lang, "db_scope"), list(SCOPE),
+                                      format_func=lambda k: SCOPE[k], key="b_only_p")
+            else:
+                SCOPE = {"db_s1": T(lang, "db_s1"), "db_s2": T(lang, "db_s2"),
+                         "db_s3": T(lang, "db_s3")}
+                only = c[3].selectbox(T(lang, "db_scope"), list(SCOPE),
+                                      format_func=lambda k: SCOPE[k], key="b_only")
+
+            v = base
             if kw:
                 v = v[v["company"].str.contains(kw, na=False)
                       | v["title"].str.contains(kw, na=False)]
             if gu != T(lang, "db_all"):
                 v = v[v["sigungu"] == gu]
-            if only == "db_s1":
+            if src == "priv":
+                if only == "pv_b":          # 본문 있는 것만 (진단 가능)
+                    v = v[pd.to_numeric(v["body_chars"], errors="coerce") >= 50]
+            elif only == "db_s1":
                 v = v[v["wantedAuthNo"].isin(has_chk)]
             elif only == "db_s2":
                 v = v[v["wantedAuthNo"].isin(has_det)]
@@ -745,23 +809,58 @@ def main() -> None:
             else:
                 opts = v.head(300)
                 idx = st.selectbox(
-                    T(lang, "db_sel"), list(opts.index), key="b_sel",
+                    T(lang, "db_sel"), list(opts.index), key=f"b_sel_{src}",
                     format_func=lambda i: (
                         txt(opts.loc[i, "company"], "(기업명 미상)")[:26] + " — "
                         + txt(opts.loc[i, "title"], "")[:44]))
-                rec = posts.loc[idx]
-                p = predict(posts.loc[[idx]], meta, boosters).iloc[0]
-                det = None
+                rec = base.loc[idx]
+                if src == "priv":
+                    # 민간 공고는 모델을 쓰지 않는다. 같은 직종 알바 공고의
+                    # 실측 분위수와 비교한다. 이유는 build_private_benchmark.py 참고.
+                    p, bmeta = bench_interval(rec, bench)
+                    if p is None:
+                        st.warning(T(lang, "db_none"))
+                        st.stop()
+                else:
+                    p, bmeta = predict(base.loc[[idx]], meta, boosters).iloc[0], None
+                det, items = None, []
                 if det_df is not None:
                     sel = det_df[det_df["wantedAuthNo"] == rec["wantedAuthNo"]]
                     if len(sel):
                         det = det_from_row(sel.iloc[0])
-                items = []
                 if lang in chk:
                     q_ = chk[lang]
                     items = q_[q_["wantedAuthNo"] == rec["wantedAuthNo"]].to_dict("records")
 
+                # 민간 공고는 미리 만들어 둔 진단 결과가 없다. 본문이 있으면
+                # 그 자리에서 돌린다(사용자 키 사용). 결과는 공고별로 캐시한다.
+                body_priv = txt(rec.get("job_content"), "")
+                if src == "priv":
+                    if len(body_priv.strip()) < 50:
+                        st.caption("🖼 " + T(lang, "pv_noimg"))
+                    else:
+                        wid = str(rec["wantedAuthNo"])
+                        cache = st.session_state.setdefault("t2_live", {})
+                        if wid not in cache and openai_client():
+                            if st.button(T(lang, "pv_run"), key=f"pv_go_{wid}"):
+                                with st.spinner(T(lang, "spinner")):
+                                    try:
+                                        cache[wid] = run_live(body_priv, lang)
+                                    except Exception as e:
+                                        st.warning(friendly_error(e), icon="⚠️")
+                        if wid in cache:
+                            det, items = cache[wid]
+
                 st.divider()
+                if bmeta:
+                    # 무엇과 비교하는지를 먼저 밝힌다. 모델 예측으로 오해하면
+                    # 이 숫자의 뜻이 완전히 달라진다.
+                    st.info(T(lang, "pv_basis" if bmeta["scope"] == "job" else "pv_all")
+                            .format(n=f"{bmeta['n']:,}"), icon="📏")
+                    with st.expander(T(lang, "src") + " — " + T(lang, "src_priv")):
+                        st.caption(T(lang, "pv_why"))
+                    if bool(rec.get("is_offer_duplicate")):
+                        st.caption("↻ " + T(lang, "pv_dup"))
                 show_metrics(p, txt(rec.get("sal_type"), ""),
                              pd.to_numeric(pd.Series([rec.get("sal_min_won")]),
                                            errors="coerce").iloc[0],
@@ -771,8 +870,9 @@ def main() -> None:
                                              errors="coerce").iloc[0],
                             {"ksco_code": txt(rec.get("ksco_code"), ""),
                              "sigungu": txt(rec.get("sigungu"), "")},
-                            posts, lang)
-                st.markdown(build_report(rec, p, det, items, LANGUAGES[lang], meta),
+                            base, lang)
+                st.markdown(build_report(rec, p, det, items, LANGUAGES[lang], meta,
+                                         basis="obs" if src == "priv" else "ml"),
                             unsafe_allow_html=True)
                 if items:
                     with st.expander(T(lang, "db_qonly")):

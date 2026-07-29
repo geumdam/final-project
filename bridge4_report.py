@@ -105,7 +105,7 @@ def wage_verdict(real_hourly: float | None, lo: int, hi: int, mw26: int,
 
 def build_report(rec: pd.Series, pred: pd.Series, detection: dict | None,
                  checklist: list[dict], lang_name: str, meta: dict,
-                 show_monthly: bool = True) -> str:
+                 show_monthly: bool = True, basis: str = "ml") -> str:
     """진단 리포트(마크다운)를 만든다.
 
     rec        공고 1행 (company/title/sigungu/sal_type/sal_min_won/hourly_wage 등)
@@ -113,7 +113,17 @@ def build_report(rec: pd.Series, pred: pd.Series, detection: dict | None,
     detection  {'status','labels':{라벨:{'flag','evidence'}},'기타':[...]}  없으면 None
     checklist  [{'항목','한국어질문','모국어질문','확인이유','위험도'}, ...]
     lang_name  모국어 표기 (예: '简体中文')
+    basis      'ml'  = 모델 예측구간 (고용24 공고)
+               'obs' = 같은 직종 알바 공고의 실측 분위수 (알바몬·알바천국)
+
+               민간 공고에 'ml' 을 쓰면 안 된다. 모델은 고용24 로 학습해서
+               민간 커버리지가 40.6% 로 무너지므로 값의 출처가 다르고,
+               '예측'이라고 적으면 관측값을 추정값으로 오인하게 만든다.
     """
+    OBS = basis == "obs"
+    HDR = "📊 1. [실측 기준] 알바 시급 비교" if OBS else "📊 1. [ML 기반] 적정 임금 진단"
+    RANGE = "같은 직종 실측 시급대" if OBS else "ML 예측 적정 범위"
+    BAND = "실측 80% 구간" if OBS else "80% 신뢰구간"
     lo, mid, hi = int(pred["lo"]), int(pred["mid"]), int(pred["hi"])
     rel = str(pred["rel"])
     mw26 = int(meta["minimum_wage_2026"])
@@ -142,19 +152,19 @@ def build_report(rec: pd.Series, pred: pd.Series, detection: dict | None,
     L.append("---")
 
     # ── 1. ML ────────────────────────────────────────────────────────
-    L.append("### 📊 1. [ML 기반] 적정 임금 진단")
+    L.append(f"### {HDR}")
     L.append("")
     if rel == "매우낮음":
-        L.append("- **ML 예측 적정 범위**: 제시 보류 — 비슷한 조건의 공고가 부족해 "
+        L.append(f"- **{RANGE}**: 제시 보류 — 비슷한 조건의 공고가 부족해 "
                  "신뢰할 만한 범위를 내기 어렵습니다.")
         L.append(f"- **참고 중앙 추정**: 월 약 {to_man(mid)}만원 (시급 {mid:,}원) "
                  f"*(신뢰도 매우낮음)*")
     elif rel == "낮음":
-        L.append(f"- **ML 예측 적정 범위**: 월 약 **{to_man(mid)}만원** (시급 {mid:,}원) "
+        L.append(f"- **{RANGE}**: 월 약 **{to_man(mid)}만원** (시급 {mid:,}원) "
                  f"*(비슷한 조건이 적어 구간 대신 중앙값만 제시)*")
     else:
-        L.append(f"- **ML 예측 적정 범위**: "
-                 f"**월 {to_man(lo)}만원 ~ {to_man(hi)}만원** (80% 신뢰구간)")
+        L.append(f"- **{RANGE}**: "
+                 f"**월 {to_man(lo)}만원 ~ {to_man(hi)}만원** ({BAND})")
         L.append(f"  · 시급 환산 {lo:,} ~ {hi:,}원 · 신뢰도 **{rel}**")
 
     if amt is not None:
