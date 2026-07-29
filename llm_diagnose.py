@@ -114,6 +114,9 @@ def report_usage(tag: str) -> None:
 
 WORKERS = 6
 MAX_RETRY = 3
+# 화면 앞에서 기다리는 호출은 상한을 짧게. 배치는 오래 기다려도 되지만
+# 화면은 몇 분만 멈춰도 고장으로 보인다.
+MAX_RETRY_UI = 2
 
 # 대표 F1(성공기준 3번)에서 제외할 라벨.
 # 사회보험_미기재 는 공고 94.7% 가 미기재라 라벨이 거의 상수다. 전부 1 로 찍어도
@@ -124,21 +127,43 @@ EXCLUDE_FROM_F1 = ("사회보험_미기재",)
 BACKTRANS_ERR: dict[str, str] = {}
 
 
-def client():
+class NoKey(RuntimeError):
+    """키가 없을 때. sys.exit 대신 이걸 던진다.
+
+    전에는 sys.exit 였는데, 그것은 SystemExit 을 던지고 SystemExit 은
+    Exception 의 하위가 아니다. 그래서 앱의 `try/except Exception` 을
+    그대로 통과해 Streamlit 스크립트를 실행 중에 죽였다.
+    화면에서는 위젯이 회색으로 굳고 스피너가 멈춰 '먹통' 으로 보였다.
+    """
+
+
+def client(key: str | None = None, *, interactive: bool = False):
+    """OpenAI 클라이언트.
+
+    key      직접 넘기는 키. 앱은 화면 입력값(st.session_state)을 여기로 넘긴다.
+             환경변수만 보던 탓에 화면에 넣은 키가 진단에 전달되지 않았다.
+    interactive
+             사람이 화면 앞에서 기다리는 호출이면 True. 대기 상한을 짧게 잡는다.
+             배치(CLI)는 오래 기다려도 되지만, 화면은 몇 분만 멈춰도 고장으로 보인다.
+    """
     # python-dotenv 는 로컬 개발 편의용 선택 의존성이다.
     # 배포본에는 .env 가 없고 Streamlit Secrets 를 쓰므로 없어도 동작해야 한다.
     # (필수 import 로 두었다가 배포본이 ModuleNotFoundError 로 죽었다)
-    if not os.getenv("OPENAI_API_KEY"):
+    if not key and not os.getenv("OPENAI_API_KEY"):
         try:
             from dotenv import load_dotenv
             load_dotenv()
         except ModuleNotFoundError:
             pass
-    key = os.getenv("OPENAI_API_KEY")
+    key = key or os.getenv("OPENAI_API_KEY")
     if not key:
-        sys.exit("OPENAI_API_KEY 가 없습니다. .env 에 추가하세요.")
+        raise NoKey("OPENAI_API_KEY 가 없습니다.")
     from openai import OpenAI
 
+    if interactive:
+        # 상한을 계산해서 정한다. parse() 가 MAX_RETRY_UI 번 감싸므로
+        # 최악 = MAX_RETRY_UI x (max_retries+1) x timeout = 2 x 1 x 40 = 80초.
+        return OpenAI(api_key=key, timeout=40.0, max_retries=0)
     return OpenAI(api_key=key, timeout=180.0, max_retries=2)
 
 
@@ -173,7 +198,8 @@ def safe_to_csv(df: pd.DataFrame, path: Path) -> None:
             time.sleep(1.5)
 
 
-def parse(cli, model: str, effort: str, system: str, user: str, schema, cache_key: str):
+def parse(cli, model: str, effort: str, system: str, user: str, schema, cache_key: str,
+          *, tries: int | None = None):
     """Structured Outputs 로 호출하고 파싱된 객체를 돌려준다.
 
     모델이 특정 파라미터를 지원하지 않으면(400) 그 파라미터만 빼고 다시 시도한다.
@@ -191,7 +217,7 @@ def parse(cli, model: str, effort: str, system: str, user: str, schema, cache_ke
         "max_completion_tokens": 8000,
         "prompt_cache_key": cache_key,
     }
-    for attempt in range(MAX_RETRY):
+    for attempt in range(tries or MAX_RETRY):
         try:
             r = cli.chat.completions.parse(model=model, **kw)
             if r.usage:                     # 토큰 집계 — 예산 관리에 쓴다

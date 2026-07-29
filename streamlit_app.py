@@ -331,11 +331,18 @@ def openai_client():
     if not key:
         return None
     from openai import OpenAI
-    return OpenAI(api_key=key, timeout=120.0, max_retries=1)
+    # 화면 앞에서 기다리는 호출이므로 상한을 짧게 잡는다.
+    # parse() 가 tries=MAX_RETRY_UI(2) 로 감싸므로 최악 2 x 40 = 80초.
+    return OpenAI(api_key=key, timeout=40.0, max_retries=0)
 
 
 def friendly_error(e: Exception) -> str:
     m = str(e)
+    if m == "no-key" or "OPENAI_API_KEY" in m:
+        return "OpenAI 키가 필요합니다. 왼쪽 사이드바에 키를 넣어 주세요."
+    if isinstance(e, TimeoutError) or "timed out" in m.lower() or "Timeout" in m:
+        return ("응답이 오지 않아 중단했습니다(40초 x 2회). "
+                "잠시 후 다시 눌러 주세요. 계속되면 키의 사용 한도를 확인해 주세요.")
     if "insufficient_quota" in m or "current quota" in m:
         return ("이 API 키는 OpenAI 사용 한도를 초과했습니다. "
                 "크레딧을 충전하거나 다른 키를 넣어 주세요.")
@@ -871,9 +878,13 @@ def main() -> None:
                                 d_, items_ = run_live(body, lang, pcond)
                                 st.session_state["t1_det"] = d_
                                 st.session_state["t1_items"] = items_
-                                st.session_state["t1_det_body"] = sig
                             except Exception as e:
                                 st.warning(friendly_error(e), icon="⚠️")
+                            finally:
+                                # 성공이든 실패든 표식을 남긴다. 실패 때 남기지 않으면
+                                # 이후 모든 조작(대화 입력 포함)이 진단 2회 호출을
+                                # 처음부터 다시 돌려 매번 멈춘다.
+                                st.session_state["t1_det_body"] = sig
                 det = st.session_state.get("t1_det")
                 items = st.session_state.get("t1_items") or []
             else:
@@ -1117,11 +1128,17 @@ def run_live(body: str, lang: str, cond: str = "", 근무시간항목: str = "")
                              Checklist, Detection, build_checklist_user,
                              build_detect_user)
 
-    cli = L.client()
+    # 앱이 만든 클라이언트를 그대로 쓴다. 전에는 여기서 L.client() 를 불렀는데
+    # 그 함수는 환경변수·.env 만 보므로 화면에 넣은 키가 전달되지 않았고,
+    # 키가 없으면 sys.exit 로 스크립트를 죽여 화면이 먹통이 됐다.
+    cli = openai_client()
+    if cli is None:
+        raise RuntimeError("no-key")
+    T_UI = L.MAX_RETRY_UI
     got, err = L.parse(cli, L.MODEL_DETECT, L.EFFORT_DETECT, DETECT_SYSTEM,
                        build_detect_user(body, "", len(body),
                                          근무시간항목, cond),
-                       Detection, "bridge4-streamlit-detect")
+                       Detection, "bridge4-streamlit-detect", tries=T_UI)
     if got is None:
         raise RuntimeError(err or "판정 실패")
     dd = got.model_dump()
@@ -1142,7 +1159,7 @@ def run_live(body: str, lang: str, cond: str = "", 근무시간항목: str = "")
     flat = {l: dd[l] for l in LABELS} | {"기타_확인필요": dd["기타_확인필요"]}
     ck, err = L.parse(cli, L.MODEL_CHECKLIST, L.EFFORT_CHECKLIST, CHECKLIST_SYSTEM,
                       build_checklist_user(flat, lang, rows, body),
-                      Checklist, f"bridge4-streamlit-chk-{lang}")
+                      Checklist, f"bridge4-streamlit-chk-{lang}", tries=T_UI)
     return det, ([i.model_dump() for i in ck.items] if ck else [])
 
 
