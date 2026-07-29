@@ -547,6 +547,9 @@ def url_panel(lang: str) -> None:
     # 사이트가 입력칸으로 밝힌 근로조건. 본문이 이미지뿐인 공고(알바몬 45%)에서
     # 이것이 유일한 근거가 되므로 진단·대화에 함께 넘긴다.
     st.session_state["p_cond"] = getattr(r, "conditions", "") or ""
+    # 상세요강 이미지 주소. ocr_panel 이 이걸 보고 버튼을 띄운다.
+    st.session_state["p_imgs"] = list(getattr(r, "image_urls", []) or [])
+    st.session_state.pop("ocr_cache", None)   # 공고가 바뀌면 캐시 버린다
     if r.wage_kind and r.wage_amount:
         st.session_state["p_sk"] = r.wage_kind
         st.session_state["p_sv"] = (r.wage_amount / 10000
@@ -578,6 +581,61 @@ def url_panel(lang: str) -> None:
             for w in probs:
                 st.caption(w)
     st.session_state["p_ready"] = False        # 폼을 펼쳐 확인하게 한다
+
+
+def ocr_panel(lang: str) -> None:
+    """상세요강이 그림인 공고에서 그림 속 글자를 읽어 본문에 넣는다.
+
+    자동으로 돌리지 않는다. 비전 호출은 이미지 장수만큼 비용이 붙으므로
+    사용자가 버튼을 누를 때만 부르고, 결과는 공고 링크별로 캐시해 다시
+    청구되지 않게 한다.
+    """
+    urls = st.session_state.get("p_imgs") or []
+    if not urls:
+        return
+    key = st.session_state.get("p_url", "")
+    cache = st.session_state.setdefault("ocr_cache", {})
+
+    st.markdown("**" + T(lang, "ocr_hdr") + "**")
+    st.caption(T(lang, "ocr_note"))
+
+    if key in cache:
+        got = cache[key]
+    else:
+        cli = openai_client()
+        if not cli:
+            st.caption(T(lang, "ocr_key"))
+            return
+        if not st.button(T(lang, "ocr_btn").format(n=len(urls)), key="ocr_go"):
+            return
+        import ocr_vision as OV
+        import llm_diagnose as L
+        with st.spinner(T(lang, "ocr_run")):
+            imgs, notes = OV.fetch_images(urls, referer=key)
+            if not imgs:
+                st.warning(T(lang, "ocr_fail"), icon="🖼")
+                for n in notes:
+                    st.caption(n)
+                return
+            text, err = OV.ocr(cli, imgs, L.MODEL_DETECT)
+        got = {"text": text, "error": err, "notes": notes}
+        cache[key] = got
+
+    if got["error"]:
+        st.warning(T(lang, "ocr_fail"), icon="🖼")
+        st.caption(got["error"][:200])
+        return
+    if not got["text"]:
+        st.info(T(lang, "ocr_none"), icon="🖼")
+        return
+
+    # 본문 칸에 넣는다. 진단·대화가 이 값을 그대로 근거로 쓴다.
+    if st.session_state.get("p_body", "") != got["text"]:
+        st.session_state["p_body"] = got["text"]
+    st.success(T(lang, "ocr_ok").format(n=f"{len(got['text']):,}"), icon="🖼")
+    st.caption("⚠️ " + T(lang, "ocr_warn"))
+    with st.expander(T(lang, "ocr_show")):
+        st.text(got["text"])
 
 
 def show_metrics(p, kind: str, posted, real, lang: str) -> None:
@@ -691,6 +749,7 @@ def main() -> None:
     with t1:
         with st.expander(T(lang, "step1"), expanded=not st.session_state.get("p_ready")):
             url_panel(lang)
+            ocr_panel(lang)
             if CRAWLER:
                 st.markdown("**" + T(lang, "url_or") + "**")
             body = st.text_area(
@@ -791,7 +850,7 @@ def main() -> None:
 
             if st.button(T(lang, "btn_reset"), key="p_reset"):
                 for k in ("p_ready", "t1_hist", "t1_det", "t1_items",
-                          "t1_det_body", "p_cond"):
+                          "t1_det_body", "p_cond", "p_imgs", "ocr_cache"):
                     st.session_state.pop(k, None)
                 st.rerun()
 

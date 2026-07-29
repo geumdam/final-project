@@ -116,6 +116,11 @@ class FetchResult:
     work_days_raw: str = ""             # 근무요일 원문
     job_categories: str = ""            # 사이트 표기 업직종
 
+    # 상세요강 이미지. body 가 비었을 때 여기서 글자를 읽어야 한다(ocr_vision.py).
+    # 여기서 바로 OCR 하지 않는 이유 — OCR 은 API 호출이라 비용이 들고 키가
+    # 필요하다. 수집은 키 없이도 되어야 하므로 URL 만 넘기고 판단은 호출부가 한다.
+    image_urls: list[str] = field(default_factory=list)
+
     # ── 수집 메타 ──────────────────────────────────────────────
     ok: bool = True
     error: str = ""
@@ -294,10 +299,16 @@ def crawl_alba(url: str) -> FetchResult:
             welfare = _fmt_welfare(view.get(WELFARE_KEY))
             row = C.build_albamon({"recruitNo": pid},
                                   C.pick(view, C.ALBAMON_VIEW_KEYS))
+            # 상세요강 원본 HTML. 이미지 주소가 여기 들어 있다.
+            # 수집기는 sanitize_body 로 태그를 벗겨 텍스트만 남기므로,
+            # 통이미지 공고는 여기서 <img src> 를 따로 건져야 한다.
+            detail_html = view.get("content") or ""
         else:
             pid = m_alba.group(1)
-            row = C.build_alba(pid, C.alba_detail(s, pid))
+            got = C.alba_detail(s, pid)
+            row = C.build_alba(pid, got)
             welfare = ""      # 알바천국은 정의목록에 복리후생이 따로 오지 않는다
+            detail_html = got.get("body_html") or ""
     except Exception as e:                    # 네트워크·구조 변경·차단 전부
         return FetchResult(ok=False, source_url=url,
                            error=f"{type(e).__name__}: {str(e)[:180]}")
@@ -333,11 +344,23 @@ def crawl_alba(url: str) -> FetchResult:
     if r.weekly_hours is None and daily and r.work_days:
         r.weekly_hours = round(float(daily) * float(r.work_days), 1)
 
+    # 상세요강 이미지 주소. 본문이 비었을 때 호출부가 OCR 로 읽는다.
+    try:
+        from ocr_vision import extract_image_urls
+        r.image_urls = extract_image_urls(detail_html, url)
+    except ImportError:
+        r.warnings.append("ocr_vision 을 못 불러와 이미지 목록을 만들지 못했습니다")
+
     r.conditions = build_conditions(r)
     if not r.body.strip():
-        r.warnings.append(
-            "이 공고는 상세요강이 이미지라 본문 텍스트가 없습니다. "
-            "아래 근로조건 항목을 근거로 진단합니다.")
+        if r.image_urls:
+            r.warnings.append(
+                f"상세요강이 이미지 {len(r.image_urls)}장으로 올라와 본문 텍스트가 "
+                f"없습니다. 이미지에서 글자를 읽으면 급여 구성까지 진단할 수 있습니다.")
+        else:
+            r.warnings.append(
+                "이 공고는 본문 텍스트가 없습니다. "
+                "아래 근로조건 항목을 근거로 진단합니다.")
     if not r.conditions and not r.body.strip():
         return FetchResult(ok=False, source_url=url,
                            error="본문도 근로조건 항목도 비어 있습니다")
