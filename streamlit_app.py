@@ -40,8 +40,8 @@ from bridge4_i18n_app import a as T
 from bridge4_charts import t as CH_TXT
 from bridge4_charts import (distribution_chart, percentile_of,
                             position_chart, similar_postings)
-from bridge4_i18n_app import (man_range, reliability, suggest, value_label,
-                              won)
+from bridge4_i18n_app import (man_range, reliability, suggest, unit_label,
+                              value_label, won)
 from bridge4_report import build_questions_only, build_report
 from llm_prompts import (LABELS, LANGUAGES, build_chat_context,
                          lang_directive)
@@ -120,6 +120,28 @@ def load_private() -> tuple[pd.DataFrame, dict]:
     bj = DATA_DIR / "private_benchmark.json"
     b = json.loads(bj.read_text(encoding="utf-8")) if bj.exists() else {}
     return d, b
+
+
+def rec_conditions(rec: pd.Series) -> str:
+    """저장된 공고 1행에서 '근로조건 항목' 글을 만든다.
+
+    링크 수집의 crawler_interface.build_conditions 와 같은 역할이다.
+    본문이 이미지뿐인 공고에서 이것이 유일한 근거가 된다.
+
+    복리후생은 없다 — 팀원 수집기의 allowlist 에 `welfareBenefits` 가 빠져 있어
+    저장분에는 담기지 않았다(링크로 새로 불러오면 들어온다).
+    """
+    L = []
+    kind, amt = txt(rec.get("sal_type"), ""), rec.get("sal_min_won")
+    amt = pd.to_numeric(pd.Series([amt]), errors="coerce").iloc[0]
+    if kind and pd.notna(amt):
+        L.append(f"- 급여: {kind} {amt:,.0f}원")
+    for label, key in (("근무시간·요일", "근무시간항목"), ("고용형태", "employ_type"),
+                       ("직종", "ksco_name"), ("근무지역", "sigungu")):
+        v = txt(rec.get(key), "")
+        if v:
+            L.append(f"- {label}: {v}")
+    return "\n".join(L)
 
 
 def bench_interval(rec: pd.Series, bench: dict):
@@ -366,7 +388,10 @@ def wage_inputs(prefix: str, lang: str):
     unit = {"월급": "만원", "시급": "원", "연봉": "만원", "일급": "만원"}[kind]
     step = {"월급": 10.0, "시급": 100.0, "연봉": 100.0, "일급": 1.0}[kind]
     dflt = {"월급": 220.0, "시급": 11000.0, "연봉": 2800.0, "일급": 10.0}[kind]
-    v = c[1].number_input(T(lang, "wage_amt") + " (" + unit + ")",
+    # 단위도 화면 언어로 적는다. '만원' 을 그대로 두면 중국어 화면에
+    # '金额 (만원)' 처럼 한국어가 섞인다. '만' 이 없는 언어는 MAN_UNIT 에
+    # 항목이 없어 unit_label 이 원 단위 표기를 돌려준다.
+    v = c[1].number_input(T(lang, "wage_amt") + " (" + unit_label(lang, unit) + ")",
                           0.0, 100000.0, dflt, step, key=prefix + "sv")
     if not v:
         return kind, None
@@ -513,15 +538,15 @@ def url_panel(lang: str) -> None:
             return
 
     if not r.ok:
-        # 미구현과 수집 실패를 구분해서 안내한다
-        todo = "구현되지 않았" in (r.error or "")
-        st.warning(T(lang, "url_todo" if todo else "url_fail"), icon="🔗")
-        if not todo:
-            st.caption(r.error[:200])
+        st.warning(T(lang, "url_fail"), icon="🔗")
+        st.caption(r.error[:200])
         return
 
     # 폼 위젯의 세션 값을 직접 채운다. 위젯 키와 이름이 같아야 반영된다.
     st.session_state["p_body"] = r.body or ""
+    # 사이트가 입력칸으로 밝힌 근로조건. 본문이 이미지뿐인 공고(알바몬 45%)에서
+    # 이것이 유일한 근거가 되므로 진단·대화에 함께 넘긴다.
+    st.session_state["p_cond"] = getattr(r, "conditions", "") or ""
     if r.wage_kind and r.wage_amount:
         st.session_state["p_sk"] = r.wage_kind
         st.session_state["p_sv"] = (r.wage_amount / 10000
@@ -540,9 +565,18 @@ def url_panel(lang: str) -> None:
         st.session_state["p_em"] = int(r.employees)
 
     st.success(T(lang, "url_ok"), icon="🔗")
-    # 학습 범주와 어긋난 값이 있으면 알린다 (조용히 결측 처리되는 것을 막는다)
-    for w in validate_fetch(r):
-        st.caption("⚠️ " + w)
+
+    # 본문이 이미지뿐인 경우는 사용자 언어로 안내한다.
+    if not (r.body or "").strip() and (getattr(r, "conditions", "") or "").strip():
+        st.info(T(lang, "cond_only"), icon="🖼")
+
+    # validate() 는 한국어 개발자용 메시지다. 화면에 그대로 뿌리면 중국어 UI 에
+    # 한국어 경고가 섞인다. 접어 두고, 값을 확인하려는 사람만 펼쳐 보게 한다.
+    probs = [w for w in validate_fetch(r) if "진단은 됩니다" not in w]
+    if probs:
+        with st.expander("⚠️ " + T(lang, "url_hdr") + " — " + str(len(probs))):
+            for w in probs:
+                st.caption(w)
     st.session_state["p_ready"] = False        # 폼을 펼쳐 확인하게 한다
 
 
@@ -720,17 +754,25 @@ def main() -> None:
             show_metrics(p, kind, posted, real, lang)
             show_charts(p, real, cond, posts, lang)
 
+            # 링크로 불러왔다면 사이트 입력 항목이 여기 있다.
+            pcond = st.session_state.get("p_cond", "") or ""
             det = None
-            if body.strip():
-                if st.session_state.get("t1_det_body") != body:
+            if body.strip() or pcond.strip():
+                if pcond and not body.strip():
+                    st.info(T(lang, "cond_only"), icon="🖼")
+                    with st.expander(T(lang, "cond_hdr"), expanded=True):
+                        st.text(pcond)
+                # 본문과 조건 둘 다를 캐시 키로 쓴다. 조건만 바뀌어도 다시 돌려야 한다.
+                sig = body + " ||조건|| " + pcond
+                if st.session_state.get("t1_det_body") != sig:
                     cli = openai_client()
                     if cli:
                         with st.spinner(T(lang, "spinner")):
                             try:
-                                d_, items_ = run_live(body, lang)
+                                d_, items_ = run_live(body, lang, pcond)
                                 st.session_state["t1_det"] = d_
                                 st.session_state["t1_items"] = items_
-                                st.session_state["t1_det_body"] = body
+                                st.session_state["t1_det_body"] = sig
                             except Exception as e:
                                 st.warning(friendly_error(e), icon="⚠️")
                 det = st.session_state.get("t1_det")
@@ -744,10 +786,12 @@ def main() -> None:
                                 unsafe_allow_html=True)
 
             st.divider()
-            chat_panel(build_chat_context(body, wage_ctx(p, rec), det), "t1", lang)
+            chat_panel(build_chat_context(body, wage_ctx(p, rec), det,
+                                          근로조건=pcond), "t1", lang)
 
             if st.button(T(lang, "btn_reset"), key="p_reset"):
-                for k in ("p_ready", "t1_hist", "t1_det", "t1_items", "t1_det_body"):
+                for k in ("p_ready", "t1_hist", "t1_det", "t1_items",
+                          "t1_det_body", "p_cond"):
                     st.session_state.pop(k, None)
                 st.rerun()
 
@@ -832,20 +876,29 @@ def main() -> None:
                     q_ = chk[lang]
                     items = q_[q_["wantedAuthNo"] == rec["wantedAuthNo"]].to_dict("records")
 
-                # 민간 공고는 미리 만들어 둔 진단 결과가 없다. 본문이 있으면
-                # 그 자리에서 돌린다(사용자 키 사용). 결과는 공고별로 캐시한다.
+                # 민간 공고는 미리 만들어 둔 진단 결과가 없다. 그 자리에서 돌린다
+                # (사용자 키 사용). 결과는 공고별로 캐시한다.
+                #
+                # 본문이 이미지뿐이어도 진단한다. 급여·근무시간·고용형태가 근로조건
+                # 항목에 있으므로 그것만으로도 판정할 항목이 있다. 예전에는 여기서
+                # 막아 두어, 화면에 조건이 다 보이는 공고를 '진단 불가' 로 돌려보냈다.
                 body_priv = txt(rec.get("job_content"), "")
+                cond_priv = rec_conditions(rec)
                 if src == "priv":
-                    if len(body_priv.strip()) < 50:
+                    if len(body_priv.strip()) < 50 and not cond_priv:
                         st.caption("🖼 " + T(lang, "pv_noimg"))
                     else:
+                        if len(body_priv.strip()) < 50:
+                            st.caption("🖼 " + T(lang, "cond_only"))
                         wid = str(rec["wantedAuthNo"])
                         cache = st.session_state.setdefault("t2_live", {})
                         if wid not in cache and openai_client():
                             if st.button(T(lang, "pv_run"), key=f"pv_go_{wid}"):
                                 with st.spinner(T(lang, "spinner")):
                                     try:
-                                        cache[wid] = run_live(body_priv, lang)
+                                        cache[wid] = run_live(
+                                            body_priv, lang, cond_priv,
+                                            txt(rec.get("근무시간항목"), ""))
                                     except Exception as e:
                                         st.warning(friendly_error(e), icon="⚠️")
                         if wid in cache:
@@ -887,7 +940,8 @@ def main() -> None:
                     st.session_state["t2_wid"] = rec["wantedAuthNo"]
                     st.session_state.pop("t2_hist", None)
                 chat_panel(build_chat_context(b, wage_ctx(p, rec), det,
-                                              txt(rec.get("근무시간항목"), "")), "t2", lang)
+                                              txt(rec.get("근무시간항목"), ""),
+                                              rec_conditions(rec)), "t2", lang)
 
     # ── 탭 3: 성능 ────────────────────────────────────────────
     with t3:
@@ -950,8 +1004,13 @@ def main() -> None:
             "'없다'고 답하도록 했지만, 생성 모델이므로 항상 원문을 함께 확인하세요.\n")
 
 
-def run_live(body: str, lang: str):
-    """본문 하나를 그 자리에서 진단한다. OpenAI 호출."""
+def run_live(body: str, lang: str, cond: str = "", 근무시간항목: str = ""):
+    """본문 하나를 그 자리에서 진단한다. OpenAI 호출.
+
+    cond 는 채용 사이트가 입력칸으로 밝힌 근로조건이다. 알바 공고의 36%는
+    상세요강을 이미지로 올려 본문이 0자인데, 그때도 급여·근무시간·복리후생은
+    채워져 있다. 이걸 넘기지 않으면 다 적혀 있는 공고가 전부 '미기재' 로 찍힌다.
+    """
     import llm_diagnose as L
     from llm_prompts import (CHECKLIST_SYSTEM, DETECT_SYSTEM, LABEL_TERMS,
                              Checklist, Detection, build_checklist_user,
@@ -959,7 +1018,8 @@ def run_live(body: str, lang: str):
 
     cli = L.client()
     got, err = L.parse(cli, L.MODEL_DETECT, L.EFFORT_DETECT, DETECT_SYSTEM,
-                       build_detect_user(body, "", len(body), ""),
+                       build_detect_user(body, "", len(body),
+                                         근무시간항목, cond),
                        Detection, "bridge4-streamlit-detect")
     if got is None:
         raise RuntimeError(err or "판정 실패")

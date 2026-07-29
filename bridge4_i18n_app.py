@@ -20,6 +20,8 @@ from __future__ import annotations
 
 APP: dict[str, dict[str, str]] = {
     "ko": {
+        'cond_only': '이 공고는 상세요강이 이미지로 올라와 본문 글자가 없습니다. 대신 채용 사이트에 입력된 아래 근로조건을 근거로 진단합니다.',
+        'cond_hdr': '공고가 밝힌 근로조건',
         "pv_run": '이 공고 근로조건 진단하기',
         'src': '출처',
         'src_pub': '고용24 (공공)',
@@ -84,6 +86,8 @@ APP: dict[str, dict[str, str]] = {
         "db_count": "건",
     },
     "en": {
+        'cond_only': "This posting's details were uploaded as an image, so there is no body text. The working conditions entered on the job board are used instead.",
+        'cond_hdr': 'Working conditions stated in the posting',
         "pv_run": 'Diagnose this posting',
         'src': 'Source',
         'src_pub': 'Work24 (public)',
@@ -153,6 +157,8 @@ APP: dict[str, dict[str, str]] = {
         "db_count": "postings",
     },
     "zh": {
+        'cond_only': '该公告的详细内容是以图片上传的，没有正文文字。因此改用招聘网站上填写的以下劳动条件进行诊断。',
+        'cond_hdr': '公告写明的劳动条件',
         "pv_run": '诊断这条公告的劳动条件',
         'src': '来源',
         'src_pub': 'Work24（公共）',
@@ -218,6 +224,8 @@ APP: dict[str, dict[str, str]] = {
         "db_count": "条",
     },
     "vi": {
+        'cond_only': 'Chi tiết của tin này được đăng dưới dạng hình ảnh nên không có văn bản. Thay vào đó, các điều kiện làm việc nhập trên trang tuyển dụng được dùng.',
+        'cond_hdr': 'Điều kiện làm việc tin đã nêu',
         "pv_run": 'Chẩn đoán điều kiện của tin này',
         'src': 'Nguồn',
         'src_pub': 'Work24 (công)',
@@ -289,6 +297,8 @@ APP: dict[str, dict[str, str]] = {
         "db_count": "tin",
     },
     "ja": {
+        'cond_only': 'この求人は詳細が画像で登録されており本文テキストがありません。代わりに求人サイトに入力された以下の労働条件を根拠に診断します。',
+        'cond_hdr': '求人が示した労働条件',
         "pv_run": 'この求人の労働条件を診断',
         'src': '出典',
         'src_pub': 'Work24（公共）',
@@ -355,6 +365,8 @@ APP: dict[str, dict[str, str]] = {
         "db_count": "件",
     },
     "es": {
+        'cond_only': 'Los detalles de esta oferta se subieron como imagen, así que no hay texto. Se usan las condiciones laborales indicadas en el portal.',
+        'cond_hdr': 'Condiciones laborales indicadas',
         "pv_run": 'Diagnosticar esta oferta',
         'src': 'Fuente',
         'src_pub': 'Work24 (público)',
@@ -511,6 +523,20 @@ SIZE: dict[str, dict[str, str]] = {
 # '만' 단위는 한국·중국·일본에만 있다. 그 밖의 언어는 만 단위로 줄여 쓰면
 # 읽을 수 없으므로(예: es 에서 '226만' -> '2260.000' 같은 오표기) 전체 금액을 쓴다.
 MAN_UNIT: dict[str, str] = {"ko": "만원", "zh": "万韩元", "ja": "万ウォン"}
+
+
+def unit_label(lang: str, unit: str) -> str:
+    """입력칸 단위 표기를 화면 언어로 바꾼다.
+
+    '만원' 을 그대로 두면 중국어 화면에 '金额 (만원)' 처럼 한국어가 섞인다.
+    '만' 개념이 없는 언어(en·vi·es)는 만 단위 자체를 쓸 수 없으므로
+    '만원' 을 '10,000 KRW' 처럼 배수로 풀어 적는다.
+    """
+    if unit != "만원":
+        return WON_UNIT.get(lang, "원").strip()
+    if lang in MAN_UNIT:
+        return MAN_UNIT[lang]
+    return "×10,000" + WON_UNIT.get(lang, " KRW")
 WON_UNIT: dict[str, str] = {
     "ko": "원", "zh": "韩元", "ja": "ウォン",
     "en": " KRW", "vi": " won", "es": " wones",

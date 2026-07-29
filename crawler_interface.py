@@ -52,6 +52,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -106,6 +107,15 @@ class FetchResult:
     employees: float | None = None
     company_size: str = ""              # 기업규모구간
 
+    # ── 사이트가 입력칸으로 밝힌 근로조건 ──────────────────────
+    # 알바 공고의 36%는 상세요강을 이미지로 올려 body 가 0자다. 그때도 이
+    # 항목들은 채워져 있다. 진단·대화에 body 와 동등한 근거로 넣는다.
+    conditions: str = ""                # 사람이 읽는 요약 (프롬프트에 그대로 들어감)
+    welfare: str = ""                   # 복리후생 원문 (4대보험 판정의 근거)
+    work_time_raw: str = ""             # 근무시간 항목 원문
+    work_days_raw: str = ""             # 근무요일 원문
+    job_categories: str = ""            # 사이트 표기 업직종
+
     # ── 수집 메타 ──────────────────────────────────────────────
     ok: bool = True
     error: str = ""
@@ -116,28 +126,222 @@ class FetchResult:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 여기를 구현하세요
+# 수집 — 팀원 수집기(collect_commercial.py)를 그대로 재사용한다
 # ─────────────────────────────────────────────────────────────────────────────
+
+# 알바몬 상세 URL: https://www.albamon.com/jobs/detail/118166594
+RE_ALBAMON_PID = re.compile(r"albamon\.com/jobs/detail/(\d+)")
+# 알바천국 상세 URL: https://www.alba.co.kr/job/Detail?adid=12345678
+RE_ALBA_PID = re.compile(r"alba\.co\.kr/job/\w+\?[^#]*adid=(\d+)", re.I)
+
+# 알바몬 viewData 에서 복리후생. 수집기 allowlist 에는 없어서 여기서 따로 읽는다.
+# 이 값이 `사회보험_미기재` 판정을 가른다 — '국민연금·고용보험·산재보험·건강보험'
+# 이 적혀 있으면 구직자가 화면에서 볼 수 있으므로 '미기재' 가 아니다.
+WELFARE_KEY = "welfareBenefits"
+
+
+DAYS = "월화수목금토일"
+
+
+def parse_work_days(raw: str) -> float | None:
+    """'월~금' 같은 표기에서 주당 근무일수를 센다.
+
+    수집기의 `resolve_schedule` 은 이 표기를 못 읽어서 `workday_count_min` 이
+    비고(수집분 전체에서 44.1% 만 채워짐), 그러면 주당 근로시간도 못 만든다.
+    주당 근로시간과 근무일수는 모델이 쓰는 5개 피처 중 2개라 그냥 두면 아깝다.
+
+    못 읽으면 None 을 돌려준다. 억지로 5일이라고 가정하지 않는다.
+    """
+    t = (raw or "").replace(" ", "")
+    if not t:
+        return None
+    # '주5일' / '주 5회'
+    m = re.search(r"주\s*([1-7])\s*[일회]", t)
+    if m:
+        return float(m.group(1))
+    # '월~금' / '월-토' (요일 범위)
+    m = re.search(rf"([{DAYS}])\s*[~\-–]\s*([{DAYS}])", t)
+    if m:
+        a, b = DAYS.index(m.group(1)), DAYS.index(m.group(2))
+        return float((b - a) % 7 + 1)
+    # '월,수,금' / '월화수' (요일 열거) — 다른 낱말의 한 글자를 세지 않도록
+    # 요일 문자만으로 이루어진 토큰에서만 센다.
+    tok = re.findall(rf"[{DAYS}](?:\s*[,·/]\s*[{DAYS}])+", t)
+    if tok:
+        return float(len({c for c in tok[0] if c in DAYS}))
+    m = re.fullmatch(rf"[{DAYS}]{{2,7}}", t.split("|")[0])
+    if m:
+        return float(len(set(m.group(0))))
+    if "매일" in t:
+        return 7.0
+    return None
+
+
+KSCO_LUT = Path("data") / "ksco_lookup.json"
+_lut_cache: dict | None = None
+
+
+def map_ksco(job_categories: str) -> str:
+    """사이트 업직종 표기를 학습 직종 대분류('1.0'~'9.0')로 접는다.
+
+    `data/ksco_lookup.json` (build_private.py 가 만든다) 을 쓴다. 이미 매핑된
+    공고 1,876건에서 '업직종 토큰 -> 대분류' 빈도를 세어 둔 표다.
+
+    `data/job_category_mapping.csv` 의 `rule` 정규식은 쓰지 않는다. 값이
+    34~39자로 잘려 저장돼 있고 44개는 끝이 '|' 로 끊겨 **빈 문자열까지 매칭**한다.
+    그래서 어떤 입력이든 걸리고, 편의점·생산·물류가 전부 3.0(사무직)으로 접혔다.
+
+    공고는 업직종을 여러 개 달 수 있으므로(예: '고객상담·인바운드, 사무보조,
+    텔레마케팅·아웃바운드') 토큰별 표를 합산해 가장 표가 많은 대분류를 고른다.
+    표에 없는 토큰만 있으면 빈 문자열 — 결측이 틀린 직종보다 낫다.
+    """
+    global _lut_cache
+    t = (job_categories or "").strip()
+    if not t:
+        return ""
+    if _lut_cache is None:
+        try:
+            _lut_cache = json.loads(KSCO_LUT.read_text(encoding="utf-8"))
+        except Exception:
+            _lut_cache = {}
+    if not _lut_cache:
+        return ""
+    vote: dict[str, int] = {}
+    for part in t.split(","):
+        for code, n in (_lut_cache.get(part.strip()) or {}).items():
+            vote[code] = vote.get(code, 0) + int(n)
+    if not vote:
+        return ""
+    return max(vote.items(), key=lambda kv: kv[1])[0]
+
+
+def _fmt_welfare(raw) -> str:
+    """[{'value':'10','description':'국민연금'}, ...] -> '국민연금, 고용보험, ...'"""
+    if not isinstance(raw, list):
+        return ""
+    out = []
+    for x in raw:
+        d = x.get("description") if isinstance(x, dict) else x
+        d = str(d or "").strip()
+        if d and d not in out:
+            out.append(d)
+    return ", ".join(out)
+
+
+def build_conditions(r: "FetchResult") -> str:
+    """사이트 입력 항목을 사람이 읽는 한 덩어리로 만든다.
+
+    이 글이 프롬프트에 그대로 들어간다. 값이 없는 줄은 넣지 않는다 —
+    '급여: (없음)' 같은 줄을 넣으면 모델이 그걸 '미기재'의 근거로 읽는다.
+    """
+    L = []
+    if r.wage_kind and r.wage_amount:
+        L.append(f"- 급여: {r.wage_kind} {r.wage_amount:,.0f}원")
+    if r.work_time_raw:
+        L.append(f"- 근무시간: {r.work_time_raw}")
+    if r.work_days_raw:
+        L.append(f"- 근무요일: {r.work_days_raw}")
+    if r.employ_type:
+        L.append(f"- 고용형태: {r.employ_type}")
+    if r.job_categories:
+        L.append(f"- 업직종: {r.job_categories}")
+    if r.sigungu:
+        L.append(f"- 근무지역: 부산 {r.sigungu}")
+    if r.welfare:
+        L.append(f"- 복리후생: {r.welfare}")
+    return "\n".join(L)
+
 
 def crawl_alba(url: str) -> FetchResult:
     """알바몬 / 알바천국 공고 링크에서 내용을 가져온다.
 
-    TODO 크롤링 담당자
-      1. url 로 요청해 HTML(또는 렌더링 결과)을 받는다
-      2. 본문 텍스트를 body 에 담는다              <- 이것만 해도 진단·대화 동작
-      3. 가능하면 구·군·근무시간·직종을 채운다
-      4. 실패하면 FetchResult(ok=False, error="사유") 로 돌려준다
+    팀원이 만든 `collect_commercial.py` 를 그대로 호출한다. 그 수집기는 이미
+    2,050건을 실패 0으로 받아낸 코드이고, robots 하드 가드(`guard_url`)와
+    개인정보 allowlist 가 들어 있다. 여기서 다시 구현하면 그 방어가 빠진다.
 
-    주의
-      - 알바몬은 JS 렌더링·봇 차단이 있어 requests 만으로 안 될 수 있습니다.
-        Playwright 가 필요하면 알려주세요 (Streamlit Cloud 배포에 영향이 있습니다).
-      - 실패를 예외로 던지지 말고 ok=False 로 돌려주세요. 화면이 사용자에게
-        "링크를 읽지 못했습니다. 본문을 직접 붙여넣어 주세요" 라고 안내합니다.
-      - 본문에 임금·근무시간 문구가 남아 있으면 파서가 읽으니 지우지 마세요.
+    본문이 0자로 오는 것은 실패가 아니다. 알바 공고의 36%는 상세요강을
+    이미지로 올린다(알바몬 45%, 알바천국 27%). 그때는 `conditions` 에
+    담긴 사이트 입력 항목이 유일한 근거가 되므로 반드시 함께 채운다.
     """
-    return FetchResult(
-        ok=False, source_url=url,
-        error="crawl_alba() 가 아직 구현되지 않았습니다")
+    try:
+        import collect_commercial as C
+    except ImportError as e:
+        return FetchResult(ok=False, source_url=url,
+                           error=f"수집기를 불러올 수 없습니다: {e}")
+
+    m_mon = RE_ALBAMON_PID.search(url)
+    m_alba = RE_ALBA_PID.search(url)
+    if not (m_mon or m_alba):
+        return FetchResult(
+            ok=False, source_url=url,
+            error="공고 상세 링크가 아닙니다. 예: "
+                  "https://www.albamon.com/jobs/detail/118166594")
+
+    try:
+        s = C.make_session()
+        if m_mon:
+            pid = m_mon.group(1)
+            html = C.fetch(s, C.ALBAMON_DETAIL.format(pid=pid))
+            props = C.next_data(html)["props"]["pageProps"]
+            payload = props.get("data") or {}
+            view = payload.get("viewData") or {}
+            if payload.get("crawlerBlocked") or view.get("crawlingBlock"):
+                return FetchResult(ok=False, source_url=url,
+                                   error="이 공고는 사이트가 수집을 차단했습니다")
+            if not view:
+                return FetchResult(ok=False, source_url=url,
+                                   error="마감·삭제된 공고로 보입니다")
+            welfare = _fmt_welfare(view.get(WELFARE_KEY))
+            row = C.build_albamon({"recruitNo": pid},
+                                  C.pick(view, C.ALBAMON_VIEW_KEYS))
+        else:
+            pid = m_alba.group(1)
+            row = C.build_alba(pid, C.alba_detail(s, pid))
+            welfare = ""      # 알바천국은 정의목록에 복리후생이 따로 오지 않는다
+    except Exception as e:                    # 네트워크·구조 변경·차단 전부
+        return FetchResult(ok=False, source_url=url,
+                           error=f"{type(e).__name__}: {str(e)[:180]}")
+
+    r = FetchResult(
+        source_url=url,
+        title=str(row.get("title") or ""),
+        body=str(row.get("body_text") or ""),
+        wage_kind=str(row.get("wage_type") or ""),
+        wage_amount=row.get("wage_amount"),
+        sigungu=str(row.get("region_district") or ""),
+        weekly_hours=row.get("weekly_work_hours_min"),
+        work_days=row.get("workday_count_min"),
+        ksco_code=map_ksco(str(row.get("job_categories_raw") or "")),
+        employ_type=str(row.get("employment_type_raw") or ""),
+        welfare=welfare,
+        work_time_raw=str(row.get("work_time_raw") or ""),
+        work_days_raw=str(row.get("work_days_raw") or ""),
+        job_categories=str(row.get("job_categories_raw") or ""),
+    )
+    # 본문에도 개인정보가 남아 있을 수 있다. 수집기 마스킹이 구분자 폭 때문에
+    # 새는 것을 확인했으므로 여기서 한 번 더 지운다 (body_remask.py 참고).
+    try:
+        from body_remask import remask
+        r.body = remask(r.body)
+    except ImportError:
+        r.warnings.append("body_remask 를 못 불러와 본문 마스킹을 건너뛰었습니다")
+
+    # 근무일수를 못 읽었으면 요일 표기에서 다시 세고, 주당 시간도 되살린다.
+    if r.work_days is None:
+        r.work_days = parse_work_days(r.work_days_raw)
+    daily = row.get("daily_work_hours_min")
+    if r.weekly_hours is None and daily and r.work_days:
+        r.weekly_hours = round(float(daily) * float(r.work_days), 1)
+
+    r.conditions = build_conditions(r)
+    if not r.body.strip():
+        r.warnings.append(
+            "이 공고는 상세요강이 이미지라 본문 텍스트가 없습니다. "
+            "아래 근로조건 항목을 근거로 진단합니다.")
+    if not r.conditions and not r.body.strip():
+        return FetchResult(ok=False, source_url=url,
+                           error="본문도 근로조건 항목도 비어 있습니다")
+    return r
 
 
 def fetch_posting(url: str) -> FetchResult:
@@ -168,10 +372,18 @@ def validate(r: FetchResult) -> list[str]:
 
     if not r.ok:
         return [f"수집 실패: {r.error}"]
-    if not (r.body or "").strip():
-        p.append("body 가 비었습니다 — 이것이 없으면 근로조건 진단과 대화가 안 됩니다")
-    elif len(r.body.strip()) < 30:
-        p.append(f"body 가 {len(r.body.strip())}자뿐입니다 — 진단이 '본문없음' 으로 나옵니다")
+    # 본문이 비었다고 곧바로 문제인 것은 아니다. 알바 공고의 36%는 상세요강을
+    # 이미지로 올리는데, 그때도 사이트 입력 항목(conditions)이 진단 근거가 된다.
+    body_n = len((r.body or "").strip())
+    cond_n = len((r.conditions or "").strip())
+    if body_n == 0 and cond_n == 0:
+        p.append("body 와 conditions 가 모두 비었습니다 — 진단·대화가 안 됩니다")
+    elif body_n < 30 and cond_n == 0:
+        p.append(f"body 가 {body_n}자뿐이고 conditions 도 없습니다 — "
+                 f"진단이 '본문없음' 으로 나옵니다")
+    elif body_n < 30:
+        p.append(f"본문은 {body_n}자(상세요강이 이미지)지만 근로조건 항목이 "
+                 f"{cond_n}자 있어 진단은 됩니다")
 
     def chk(field_name: str, value: str, cat_key: str) -> None:
         if not value:
