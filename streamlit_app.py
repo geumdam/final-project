@@ -152,6 +152,23 @@ def rec_conditions(rec: pd.Series) -> str:
     return "\n".join(L)
 
 
+def for_report(rec: pd.Series, lang: str) -> pd.Series:
+    """리포트 제목줄에 넣을 값만 화면 언어로 바꾼 사본.
+
+    직종은 필터에서는 value_label 로 번역돼 '办事人员' 로 보이는데, 리포트
+    제목줄은 CSV 의 ksco_name 을 그대로 써서 '사무 종사자(3)' 로 나왔다.
+    같은 값이 한 화면에서 두 언어로 보이던 것을 맞춘다.
+
+    회사명·공고제목·구군은 그대로 둔다. 실제 이름이고 주소라 번역하면
+    오히려 찾을 수 없다.
+    """
+    r = rec.copy()
+    code = txt(rec.get("ksco_code"), "")
+    if code:
+        r["ksco_name"] = value_label(lang, "ksco_code", code)
+    return r
+
+
 def bench_interval(rec: pd.Series, bench: dict):
     """민간 공고의 비교 기준을 실측 분위수로 만든다.
 
@@ -864,7 +881,7 @@ def main() -> None:
 
             if det:
                 with st.expander(T(lang, "rep_open")):
-                    st.markdown(build_report(rec, p, det, items, LANGUAGES[lang], meta),
+                    st.markdown(build_report(for_report(rec, lang), p, det, items, LANGUAGES[lang], meta),
                                 unsafe_allow_html=True)
 
             st.divider()
@@ -1006,7 +1023,7 @@ def main() -> None:
                             {"ksco_code": txt(rec.get("ksco_code"), ""),
                              "sigungu": txt(rec.get("sigungu"), "")},
                             base, lang)
-                st.markdown(build_report(rec, p, det, items, LANGUAGES[lang], meta,
+                st.markdown(build_report(for_report(rec, lang), p, det, items, LANGUAGES[lang], meta,
                                          basis="obs" if src == "priv" else "ml"),
                             unsafe_allow_html=True)
                 if items:
