@@ -42,7 +42,6 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pandas as pd
-from dotenv import load_dotenv
 
 from llm_prompts import (
     BACKTRANS_SYSTEM,
@@ -117,7 +116,15 @@ BACKTRANS_ERR: dict[str, str] = {}
 
 
 def client():
-    load_dotenv()
+    # python-dotenv 는 로컬 개발 편의용 선택 의존성이다.
+    # 배포본에는 .env 가 없고 Streamlit Secrets 를 쓰므로 없어도 동작해야 한다.
+    # (필수 import 로 두었다가 배포본이 ModuleNotFoundError 로 죽었다)
+    if not os.getenv("OPENAI_API_KEY"):
+        try:
+            from dotenv import load_dotenv
+            load_dotenv()
+        except ModuleNotFoundError:
+            pass
     key = os.getenv("OPENAI_API_KEY")
     if not key:
         sys.exit("OPENAI_API_KEY 가 없습니다. .env 에 추가하세요.")

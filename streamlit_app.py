@@ -215,7 +215,7 @@ def api_key() -> str | None:
         try:                       # 로컬 실행 편의 — 배포본에는 .env 가 없다
             from dotenv import load_dotenv
             load_dotenv()
-        except Exception:
+        except (ModuleNotFoundError, Exception):
             pass
     return os.getenv("OPENAI_API_KEY")
 
