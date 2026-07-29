@@ -747,7 +747,16 @@ def main() -> None:
 
     # ── 탭 1: 붙여넣고 대화 ─────────────────────────────────────
     with t1:
-        with st.expander(T(lang, "step1"), expanded=not st.session_state.get("p_ready")):
+        # 분석이 시작되면 입력 폼을 아예 그리지 않는다.
+        #
+        # 전에는 st.expander(expanded=not p_ready) 로 접으려 했는데 닫히지 않았다.
+        # Streamlit 확장 패널의 열림 상태는 한 번 열리면 클라이언트가 들고 있어서
+        # expanded=False 로 바꿔도 그대로 열려 있다. 그 결과 폼이 1,065px 을
+        # 차지해 아래 Q&A 창이 화면 밖(y=1646)으로 밀려났다.
+        #
+        # 아래 p_ready 블록은 필요한 값을 세션에서 다시 읽으므로 폼을 안 그려도 된다.
+        # 되돌아가려면 맨 아래 '다른 공고로 바꾸기' 버튼을 쓴다.
+        if not st.session_state.get("p_ready"):
             url_panel(lang)
             ocr_panel(lang)
             if CRAWLER:
@@ -818,8 +827,12 @@ def main() -> None:
             det = None
             if body.strip() or pcond.strip():
                 if pcond and not body.strip():
+                    # 접어 둔다. 펼쳐 두면 이 블록이 1,000px 을 차지해서
+                    # 아래 Q&A 창이 화면 밖으로 밀려난다(실측: 대화창 y=2463).
+                    # 안내 문구가 이미 무엇을 근거로 쓰는지 알려주므로,
+                    # 내용을 보고 싶은 사람만 펼치면 된다.
                     st.info(T(lang, "cond_only"), icon="🖼")
-                    with st.expander(T(lang, "cond_hdr"), expanded=True):
+                    with st.expander(T(lang, "cond_box")):
                         st.text(pcond)
                 # 본문과 조건 둘 다를 캐시 키로 쓴다. 조건만 바뀌어도 다시 돌려야 한다.
                 sig = body + " ||조건|| " + pcond
