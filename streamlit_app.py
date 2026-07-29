@@ -47,6 +47,12 @@ from llm_prompts import (LABELS, LANGUAGES, build_chat_context,
                          lang_directive)
 from wage_parser import parse_wage
 
+try:                       # 링크 수집기는 선택 의존성. 없으면 링크 입력칸을 숨긴다
+    from crawler_interface import fetch_posting, validate as validate_fetch
+    CRAWLER = True
+except Exception:
+    CRAWLER = False
+
 st.set_page_config(page_title="브릿지포 — 공고 진단", page_icon="🧭", layout="wide")
 
 ROOT = Path(__file__).parent
@@ -431,6 +437,68 @@ def wage_ctx(p, rec) -> dict:
 
 # ── 메인 ─────────────────────────────────────────────────────────────
 
+def url_panel(lang: str) -> None:
+    """링크로 공고를 불러와 아래 폼을 채운다.
+
+    crawl_alba() 가 아직 구현되지 않았으면 그 사실을 사용자 언어로 알리고
+    직접 붙여넣기로 안내한다. 링크가 실패해도 기존 경로는 그대로 동작한다.
+    """
+    if not CRAWLER:
+        return
+    st.markdown("**" + T(lang, "url_hdr") + "**")
+    st.caption(T(lang, "url_note"))
+    c = st.columns([4, 1])
+    url = c[0].text_input(T(lang, "url_lbl"), key="p_url",
+                          placeholder=T(lang, "url_ph"),
+                          label_visibility="collapsed")
+    if not c[1].button(T(lang, "url_btn"), key="p_url_go",
+                       use_container_width=True):
+        return
+    if not (url or "").strip():
+        return
+
+    with st.spinner(T(lang, "url_btn")):
+        try:
+            r = fetch_posting(url)
+        except Exception as e:      # 수집기 예외가 앱을 죽이지 않게
+            st.error(T(lang, "url_fail"), icon="🔗")
+            st.caption(f"{type(e).__name__}: {str(e)[:160]}")
+            return
+
+    if not r.ok:
+        # 미구현과 수집 실패를 구분해서 안내한다
+        todo = "구현되지 않았" in (r.error or "")
+        st.warning(T(lang, "url_todo" if todo else "url_fail"), icon="🔗")
+        if not todo:
+            st.caption(r.error[:200])
+        return
+
+    # 폼 위젯의 세션 값을 직접 채운다. 위젯 키와 이름이 같아야 반영된다.
+    st.session_state["p_body"] = r.body or ""
+    if r.wage_kind and r.wage_amount:
+        st.session_state["p_sk"] = r.wage_kind
+        st.session_state["p_sv"] = (r.wage_amount / 10000
+                                    if r.wage_kind in ("월급", "연봉", "일급")
+                                    else r.wage_amount)
+    for key, val in (("p_gu", r.sigungu), ("p_ks", r.ksco_code),
+                     ("p_et", r.employ_type), ("p_ca", r.career),
+                     ("p_ed", r.education), ("p_sz", r.company_size)):
+        if val:
+            st.session_state[key] = val
+    if r.weekly_hours:
+        st.session_state["p_wk"] = float(r.weekly_hours)
+    if r.work_days:
+        st.session_state["p_dy"] = float(r.work_days)
+    if r.employees:
+        st.session_state["p_em"] = int(r.employees)
+
+    st.success(T(lang, "url_ok"), icon="🔗")
+    # 학습 범주와 어긋난 값이 있으면 알린다 (조용히 결측 처리되는 것을 막는다)
+    for w in validate_fetch(r):
+        st.caption("⚠️ " + w)
+    st.session_state["p_ready"] = False        # 폼을 펼쳐 확인하게 한다
+
+
 def show_metrics(p, kind: str, posted, real, lang: str) -> None:
     """지표 4개.
 
@@ -540,6 +608,9 @@ def main() -> None:
     # ── 탭 1: 붙여넣고 대화 ─────────────────────────────────────
     with t1:
         with st.expander(T(lang, "step1"), expanded=not st.session_state.get("p_ready")):
+            url_panel(lang)
+            if CRAWLER:
+                st.markdown("**" + T(lang, "url_or") + "**")
             body = st.text_area(
                 T(lang, "body_lbl"), height=150, key="p_body",
                 placeholder=T(lang, "body_ph"))
