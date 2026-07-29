@@ -400,14 +400,19 @@ def chat_panel(ctx: str, key_ns: str, lang: str) -> None:
 
     with st.chat_message("assistant"):
         try:
-            stream = cli.chat.completions.create(
-                model=L.MODEL_CHECKLIST,
-                reasoning_effort="low",
-                messages=msgs,
-                max_completion_tokens=1400,
-                prompt_cache_key="bridge4-chat-v1",
-                stream=True,
-            )
+            kw = {"messages": msgs, "max_completion_tokens": 1400,
+                  "reasoning_effort": "low",
+                  "prompt_cache_key": "bridge4-chat-v1", "stream": True}
+            try:
+                stream = cli.chat.completions.create(model=L.MODEL_CHECKLIST, **kw)
+            except Exception as e:
+                # 모델이 지원하지 않는 파라미터를 빼고 한 번 더 시도한다.
+                # 새 모델로 갈아탈 때 400 하나로 대화가 아예 막히는 것을 막는다.
+                m = str(e)
+                for k in ("reasoning_effort", "prompt_cache_key"):
+                    if k in m and k in kw:
+                        kw.pop(k)
+                stream = cli.chat.completions.create(model=L.MODEL_CHECKLIST, **kw)
             def gen():
                 for ch in stream:
                     if ch.choices and ch.choices[0].delta.content:

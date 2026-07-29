@@ -72,19 +72,28 @@ SAMPLE = DATA / "llm_validation_sample_100.csv"
 GLOSSARY = DATA / "glossary_labor_terms.csv"
 TEAM = DATA / "team_merged.csv"
 
-# 기본값은 '싸게 먼저'. 예산이 한정돼 있으므로 mini + 낮은 추론 강도로 시작하고,
-# 성공기준(F1 0.80 / 보존율 90%)에 미달할 때만 --model gpt-5.4 --effort high 로 올린다.
+# 사용 모델: gpt-5.6-terra (2026-07-29 지정)
 #
-# 참고: reports/llm/detect_predictions.csv 의 87건 판정은 gpt-5.4 / effort=high 로
-# 만든 것이다. 아래 기본값으로 다시 돌리면 결과가 달라질 수 있으므로,
-# 출력 CSV 에 model / effort 를 함께 기록해 어느 설정의 결과인지 남긴다.
-MODEL_DETECT = "gpt-5.4-mini"
-MODEL_CHECKLIST = "gpt-5.4-mini"
-MODEL_BACKTRANS = "gpt-5.4-mini"
+# 확인한 것 — SDK 의 ChatModel 에 등재되어 있고 추론 모델 계열이므로
+#   reasoning_effort 와 Structured Outputs 를 지원할 것으로 보인다.
+# 확인하지 못한 것 — 단가와 실제 응답 품질. 크레딧이 없어 실호출 검증을 하지 못했다.
+#   그래서 parse() 에 파라미터 거부 시 자동으로 물러나는 폴백을 넣었다.
+#
+# 주의: reports/llm/detect_predictions.csv 의 87건 판정과 F1 0.894 는
+#   gpt-5.4 / effort=high 로 만든 것이다. 이 모델로 다시 돌리면 결과가 달라질 수 있다.
+#   재측정하려면  python llm_diagnose.py detect  후  eval  을 다시 실행할 것.
+#   출력 CSV 에 model / effort 를 기록하므로 어느 설정의 결과인지 남는다.
+MODEL_DETECT = "gpt-5.6-terra"
+MODEL_CHECKLIST = "gpt-5.6-terra"
+MODEL_BACKTRANS = "gpt-5.6-terra"
 
 EFFORT_DETECT = "medium"
 EFFORT_CHECKLIST = "low"
 EFFORT_BACKTRANS = "low"
+
+# 모델이 지원하지 않는 파라미터를 거부하면 그것만 빼고 재시도한다.
+# 새 모델로 갈아탈 때 400 하나로 전건 실패하는 것을 막는다.
+DROPPABLE = ("reasoning_effort", "prompt_cache_key", "max_completion_tokens")
 
 # 실제 청구액은 요금표에 따르므로 여기서는 토큰만 집계해 보고한다.
 # 대시보드(platform.openai.com/usage)의 단가를 곱해서 쓰면 된다.
@@ -165,22 +174,26 @@ def safe_to_csv(df: pd.DataFrame, path: Path) -> None:
 
 
 def parse(cli, model: str, effort: str, system: str, user: str, schema, cache_key: str):
-    """Structured Outputs 로 호출하고 파싱된 객체를 돌려준다."""
+    """Structured Outputs 로 호출하고 파싱된 객체를 돌려준다.
+
+    모델이 특정 파라미터를 지원하지 않으면(400) 그 파라미터만 빼고 다시 시도한다.
+    새 모델로 바꿀 때 파라미터 하나 때문에 전건이 실패하는 것을 막는다.
+    """
     last = None
+    kw = {
+        # 정적인 system 을 앞에, 공고별 내용을 뒤에 두어 프롬프트 캐시가 붙게 한다
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+        "response_format": schema,
+        "reasoning_effort": effort,
+        "max_completion_tokens": 8000,
+        "prompt_cache_key": cache_key,
+    }
     for attempt in range(MAX_RETRY):
         try:
-            r = cli.chat.completions.parse(
-                model=model,
-                reasoning_effort=effort,
-                # 정적인 system 을 앞에, 공고별 내용을 뒤에 두어 프롬프트 캐시가 붙게 한다
-                messages=[
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": user},
-                ],
-                response_format=schema,
-                max_completion_tokens=8000,
-                prompt_cache_key=cache_key,
-            )
+            r = cli.chat.completions.parse(model=model, **kw)
             if r.usage:                     # 토큰 집계 — 예산 관리에 쓴다
                 USAGE["호출"] += 1
                 USAGE["입력"] += r.usage.prompt_tokens or 0
@@ -194,9 +207,20 @@ def parse(cli, model: str, effort: str, system: str, user: str, schema, cache_ke
                 last = f"finish_reason={r.choices[0].finish_reason}"
                 continue
             return msg.parsed, None
-        except Exception as e:  # 네트워크/파싱 오류만 재시도
+        except Exception as e:
             last = f"{type(e).__name__}: {e}"
-            time.sleep(2 * (attempt + 1))
+            msg = str(e)
+            # 지원하지 않는 파라미터면 빼고 즉시 재시도 (대기 없이)
+            dropped = False
+            if "400" in msg or "unsupported" in msg.lower() or "unrecognized" in msg.lower():
+                for k in DROPPABLE:
+                    if k in msg and k in kw:
+                        kw.pop(k)
+                        print(f"  ! {model} 이 {k} 를 지원하지 않아 제외하고 재시도합니다")
+                        dropped = True
+                        break
+            if not dropped:
+                time.sleep(2 * (attempt + 1))
     return None, last
 
 
