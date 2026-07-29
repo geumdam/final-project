@@ -13,9 +13,13 @@
   3. 모델 성능      성공기준 3종 지표와 한계.
 
 화면 언어
-  사이드바에서 고른 언어로 화면 전체가 바뀐다 (bridge4_i18n_app.APP).
+  사이드바에서 고른 언어로 화면 전체가 바뀐다.
+    bridge4_i18n_app.APP    탭 1·2 와 사이드바
+    bridge4_i18n_perf.PERF  탭 3(모델 성능) 문구 · 표 컬럼 이름
+    bridge4_i18n.LABEL_NAME 근로조건 7항목 이름
+
   일부러 한국어로 남기는 것 — 고용주에게 보여줄 질문 문장, 공고 인용 원문,
-  그리고 '모델 성능' 탭(팀·심사용).
+  그리고 운영자용 오류 메시지(models/meta.json 없음 등).
 
 로컬 실행
     streamlit run streamlit_app.py
@@ -42,6 +46,10 @@ from bridge4_charts import (distribution_chart, percentile_of,
                             position_chart, similar_postings)
 from bridge4_i18n_app import (man_range, reliability, suggest, unit_label,
                               value_label, won)
+from bridge4_i18n import LABEL_NAME
+from bridge4_i18n_perf import cols as PCOLS
+from bridge4_i18n_perf import limits as P_LIMITS
+from bridge4_i18n_perf import p as P
 from bridge4_report import build_questions_only, build_report
 from llm_prompts import (LABELS, LANGUAGES, build_chat_context,
                          lang_directive)
@@ -726,22 +734,24 @@ def main() -> None:
             m = reports.get("metrics")
             if m is not None and len(m):
                 r = m.iloc[0]
-                st.metric("임금 구간 커버리지", f"{r['coverage_pct']}%",
-                          f"목표 80% · 보정 전 {r['coverage_before_cqr_pct']}%")
+                st.metric(P(lang, "sb_m1"), f"{r['coverage_pct']}%",
+                          P(lang, "sb_m1_goal").format(
+                              before=r["coverage_before_cqr_pct"]))
             f1 = reports.get("f1")
             if f1 is not None and "대표지표포함" in f1.columns:
                 core = f1[f1["대표지표포함"] == "Y"]
                 if len(core):
                     tp, fp, fn = (core[k].sum() for k in ("TP", "FP", "FN"))
-                    st.metric("근로조건 탐지 F1", f"{2 * tp / (2 * tp + fp + fn):.3f}",
-                              f"목표 0.80 · 대표 {len(core)}라벨")
+                    st.metric(P(lang, "sb_m2"),
+                              f"{2 * tp / (2 * tp + fp + fn):.3f}",
+                              P(lang, "sb_m2_goal").format(n=len(core)))
             bz = reports.get("backtrans_zh")
             if bz is not None and "원문용어수" in bz.columns:
                 o = pd.to_numeric(bz["원문용어수"], errors="coerce").sum()
                 k = pd.to_numeric(bz["보존용어수"], errors="coerce").sum()
                 if o:
-                    st.metric("용어 보존율", f"{k / o * 100:.1f}%",
-                              f"목표 90% · {int(o)}회")
+                    st.metric(P(lang, "sb_m3"), f"{k / o * 100:.1f}%",
+                              P(lang, "sb_m3_goal").format(n=int(o)))
 
     t1, t2, t3 = st.tabs([T(lang, "tab_chat"), T(lang, "tab_db"), T(lang, "tab_perf")])
 
@@ -873,7 +883,7 @@ def main() -> None:
         st.caption(T(lang, "db_note") + "  ·  "
                    + f"{len(det_df) if det_df is not None else 0} / {n_chk}")
         if posts.empty:
-            st.error("공고 데이터가 없습니다.")
+            st.error(T(lang, "db_none"))
         else:
             has_det = set(det_df["wantedAuthNo"]) if det_df is not None else set()
             has_chk = set(chk[lang]["wantedAuthNo"]) if lang in chk else set()
@@ -927,7 +937,7 @@ def main() -> None:
                 idx = st.selectbox(
                     T(lang, "db_sel"), list(opts.index), key=f"b_sel_{src}",
                     format_func=lambda i: (
-                        txt(opts.loc[i, "company"], "(기업명 미상)")[:26] + " — "
+                        txt(opts.loc[i, "company"], T(lang, "no_company"))[:26] + " — "
                         + txt(opts.loc[i, "title"], "")[:44]))
                 rec = base.loc[idx]
                 if src == "priv":
@@ -1016,64 +1026,70 @@ def main() -> None:
                                               rec_conditions(rec)), "t2", lang)
 
     # ── 탭 3: 성능 ────────────────────────────────────────────
+    #
+    # 이 탭도 화면 언어를 따른다. 전에는 팀·심사용이라 한국어로 두었는데,
+    # 언어를 중국어로 바꿔도 여기만 한국어라 섞여 보였다.
+    # 문구는 bridge4_i18n_perf.PERF, 표 컬럼은 COLS 에 있다.
     with t3:
-        st.markdown("#### 성공기준")
+        st.markdown("#### " + P(lang, "criteria"))
         m, f1 = reports.get("metrics"), reports.get("f1")
         c = st.columns(3)
         if m is not None and len(m):
             r = m.iloc[0]
-            c[0].metric("① 임금 구간 커버리지", f"{r['coverage_pct']}%", "목표 80% — 달성")
-            c[0].caption(f"CQR 보정 전 {r['coverage_before_cqr_pct']}%. "
-                         f"보정이 성능의 절반을 만듭니다.")
+            c[0].metric(P(lang, "m1"), f"{r['coverage_pct']}%", P(lang, "m1_goal"))
+            c[0].caption(P(lang, "m1_note").format(
+                before=r["coverage_before_cqr_pct"]))
         if f1 is not None and "대표지표포함" in f1.columns:
             core = f1[f1["대표지표포함"] == "Y"]
             v_ = pd.to_numeric(core["F1"], errors="coerce")
             tp, fp, fn = (core[k].sum() for k in ("TP", "FP", "FN"))
-            c[1].metric("② 근로조건 탐지 F1", f"{2 * tp / (2 * tp + fp + fn):.3f}",
-                        "목표 0.80 — 달성")
-            c[1].caption(f"대표 {len(core)}라벨 micro · macro {v_.mean():.3f} · "
-                         f"정답지 47건(LLM 2종 교차 + 불일치 판정)")
+            c[1].metric(P(lang, "m2"), f"{2 * tp / (2 * tp + fp + fn):.3f}",
+                        P(lang, "m2_goal"))
+            c[1].caption(P(lang, "m2_note").format(
+                n=len(core), macro=f"{v_.mean():.3f}"))
         bz = reports.get("backtrans_zh")
         if bz is not None and "원문용어수" in bz.columns:
             o = pd.to_numeric(bz["원문용어수"], errors="coerce").sum()
             k = pd.to_numeric(bz["보존용어수"], errors="coerce").sum()
-            c[2].metric("③ 용어 보존율", f"{k / o * 100:.1f}%", "목표 90% — 달성")
-            c[2].caption(f"중국어 {int(o)}회 표본. 한국어 괄호 병기 규칙의 효과입니다.")
+            c[2].metric(P(lang, "m3"), f"{k / o * 100:.1f}%", P(lang, "m3_goal"))
+            c[2].caption(P(lang, "m3_note").format(n=int(o)))
 
         st.divider()
         cc = st.columns(2)
         rl = reports.get("reliability")
         if rl is not None:
-            cc[0].markdown("**신뢰도 등급별 성능** — 노출 정책의 근거")
-            cc[0].dataframe(rl, hide_index=True, use_container_width=True)
+            cc[0].markdown(P(lang, "t_rel"))
+            v = rl.copy()
+            # 등급 값도 화면 언어로 (값이 아니라 표시만 바꾼다)
+            if "신뢰도" in v.columns:
+                v["신뢰도"] = v["신뢰도"].map(lambda x: reliability(lang, str(x)))
+            cc[0].dataframe(v.rename(columns=PCOLS(lang, v.columns)),
+                            hide_index=True, use_container_width=True)
         if f1 is not None:
-            cc[1].markdown("**라벨별 F1**")
-            cols = [x for x in ["라벨", "n", "정답양성률", "TP", "FP", "FN",
+            cc[1].markdown(P(lang, "t_f1"))
+            keep = [x for x in ["라벨", "n", "정답양성률", "TP", "FP", "FN",
                                 "F1", "대표지표포함"] if x in f1.columns]
-            cc[1].dataframe(f1[cols], hide_index=True, use_container_width=True)
+            v = f1[keep].copy()
+            # 라벨 이름은 사용자가 읽는 항목명으로 바꾼다 (임금구성_불명확 -> 工资构成不明确)
+            if "라벨" in v.columns:
+                v["라벨"] = v["라벨"].map(lambda x: LABEL_NAME.get(lang, {}).get(x, x))
+            cc[1].dataframe(v.rename(columns=PCOLS(lang, v.columns)),
+                            hide_index=True, use_container_width=True)
 
         imp = reports.get("importance")
         if imp is not None and len(imp.columns) >= 2:
-            st.markdown("**피처 중요도**")
+            st.markdown(P(lang, "t_imp"))
+            imp = imp.copy()
             imp.columns = ["feature", "importance"][:len(imp.columns)]
+            # 피처 19개 중 2개만 한국어 이름이라 중국어 화면에서 그 둘만 한글로
+            # 남았다. 나머지가 영문 내부명이므로 여기에 맞춰 통일한다.
+            imp["feature"] = imp["feature"].replace(
+                {"기업규모구간": "company_size", "기업형태": "company_type"})
             st.bar_chart(imp.set_index("feature"), horizontal=True)
 
         st.divider()
-        st.markdown("#### 한계 — 함께 읽어야 하는 것")
-        st.markdown(
-            "- **정답지가 47건입니다.** 목표 100건의 절반이고, `사람 검수 100건` 이 아니라 "
-            "**LLM 2종(GPT-5.4 · Gemini) 교차 라벨 + 불일치 전량 판정**으로 만들었습니다. "
-            "셀 329개의 확정 근거는 `reports/llm/adjudication_log.csv` 에 있습니다.\n"
-            "- **양성 사례가 적습니다.** 라벨당 TP+FN 이 1~10건입니다. `실근로시간_미기재` 는 "
-            "양성 1건으로 F1 1.000 인데, 이는 1건을 맞춘 것입니다.\n"
-            "- **`사회보험_미기재` F1 0.987 은 성능이 아닙니다.** 가이드가 \"언급 없음 → 1\" 로 "
-            "정한 라벨이라 정답지가 규칙으로 결정되고, 모델도 같은 규칙을 받았습니다.\n"
-            "- **LLM 진단 커버리지 상한은 61.4%** 입니다. 공고 본문 보유율이 그만큼입니다.\n"
-            "- **q50 R² 는 0.283** 입니다. 점 추정 정확도는 낮으므로 구간으로 제시하고, "
-            "신뢰도 '매우낮음' 은 구간을 아예 숨깁니다.\n"
-            "- **월 환산은 209시간 기준**입니다. 실제 근무시간이 다르면 금액도 달라집니다.\n"
-            "- **대화 답변은 공고 본문을 근거로 합니다.** 공고에 없는 내용은 "
-            "'없다'고 답하도록 했지만, 생성 모델이므로 항상 원문을 함께 확인하세요.\n")
+        st.markdown("#### " + P(lang, "lim_hdr"))
+        st.markdown("\n".join("- " + x for x in P_LIMITS(lang)))
 
 
 def run_live(body: str, lang: str, cond: str = "", 근무시간항목: str = ""):

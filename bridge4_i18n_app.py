@@ -20,6 +20,7 @@ from __future__ import annotations
 
 APP: dict[str, dict[str, str]] = {
     "ko": {
+        "no_company": '(기업명 미상)',
         'ocr_hdr': '이미지에서 글자 읽기',
         'ocr_note': '이 공고는 상세요강이 그림으로 되어 있습니다. 그림 속 글자를 읽으면 급여가 어떻게 구성되는지까지 확인할 수 있습니다.',
         'ocr_btn': '그림 속 글자 읽기 ({n}장)',
@@ -96,6 +97,7 @@ APP: dict[str, dict[str, str]] = {
         "db_count": "건",
     },
     "en": {
+        "no_company": '(company not shown)',
         'ocr_hdr': 'Read text from the images',
         'ocr_note': "This posting's details are an image. Reading the text inside lets us check how the pay is actually made up.",
         'ocr_btn': 'Read the images ({n})',
@@ -177,6 +179,7 @@ APP: dict[str, dict[str, str]] = {
         "db_count": "postings",
     },
     "zh": {
+        "no_company": '(未公开公司名)',
         'ocr_hdr': '读取图片中的文字',
         'ocr_note': '该公告的详细内容是图片。读取图片中的文字后，还能确认工资的具体构成。',
         'ocr_btn': '读取图片文字（{n}张）',
@@ -254,6 +257,7 @@ APP: dict[str, dict[str, str]] = {
         "db_count": "条",
     },
     "vi": {
+        "no_company": '(không có tên công ty)',
         'ocr_hdr': 'Đọc chữ trong hình ảnh',
         'ocr_note': 'Chi tiết của tin này là hình ảnh. Đọc chữ trong hình giúp kiểm tra được lương thực sự gồm những khoản nào.',
         'ocr_btn': 'Đọc chữ trong hình ({n} hình)',
@@ -337,6 +341,7 @@ APP: dict[str, dict[str, str]] = {
         "db_count": "tin",
     },
     "ja": {
+        "no_company": '(社名非公開)',
         'ocr_hdr': '画像から文字を読み取る',
         'ocr_note': 'この求人は詳細が画像です。画像内の文字を読むと、給与の内訳まで確認できます。',
         'ocr_btn': '画像の文字を読み取る（{n}枚）',
@@ -415,6 +420,7 @@ APP: dict[str, dict[str, str]] = {
         "db_count": "件",
     },
     "es": {
+        "no_company": '(empresa no indicada)',
         'ocr_hdr': 'Leer el texto de las imágenes',
         'ocr_note': 'Los detalles de esta oferta son una imagen. Leer el texto permite comprobar cómo se compone realmente el salario.',
         'ocr_btn': 'Leer las imágenes ({n})',
