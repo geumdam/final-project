@@ -49,6 +49,19 @@ MAX_IMAGES = 4          # 이 이상은 읽지 않는다 (비용 상한)
 MIN_BYTES = 3_000       # 이보다 작으면 아이콘·여백용 이미지로 본다
 MAX_BYTES = 8_000_000   # 이보다 크면 건너뛴다 (요청 실패 방지)
 TIMEOUT = 25
+RETRY = 2               # 이미지 서버가 느릴 때가 있어 한 번 더 시도한다
+
+# 공고 이미지는 고용주 자체 서버나 대행사 서버에 올라간다(post.ksjob.co.kr 등).
+# 그 서버들이 짧은 User-Agent 를 봇으로 보고 막는다 — 실측:
+#
+#   'Mozilla/5.0'  ->  403  (44 bytes)
+#   아래 전체 UA    ->  200  (34,644 bytes)
+#
+# 그래서 브라우저와 같은 형태의 UA 를 쓴다. 우회가 아니라, 사람이 공고 화면을
+# 볼 때 브라우저가 보내는 것과 같은 값이다.
+UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+      "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
+ACCEPT_IMG = "image/avif,image/webp,image/apng,image/gif,image/*,*/*;q=0.8"
 
 # gif 는 OpenAI 비전이 받는다. svg 는 받지 않으므로 뺀다.
 OK_EXT = (".png", ".jpg", ".jpeg", ".gif", ".webp")
@@ -124,26 +137,33 @@ def fetch_images(urls, referer: str = "") -> tuple[list[tuple[str, bytes]], list
 
     got: list[tuple[str, bytes]] = []
     notes: list[str] = []
+    h = {"User-Agent": UA, "Accept": ACCEPT_IMG,
+         "Accept-Language": "ko-KR,ko;q=0.9,en;q=0.8"}
+    if referer:
+        h["Referer"] = referer
     for u in urls[:MAX_IMAGES]:
-        try:
-            h = {"User-Agent": "Mozilla/5.0"}
-            if referer:
-                h["Referer"] = referer
-            r = requests.get(u, timeout=TIMEOUT, headers=h)
-            if r.status_code != 200:
-                notes.append(f"{u[-40:]} HTTP {r.status_code}")
-                continue
-            n = len(r.content)
-            if n < MIN_BYTES:
-                notes.append(f"{u[-40:]} {n}B — 아이콘으로 보여 건너뜀")
-                continue
-            if n > MAX_BYTES:
-                notes.append(f"{u[-40:]} {n / 1e6:.1f}MB — 너무 커서 건너뜀")
-                continue
-            ext = "." + u.split("?")[0].rsplit(".", 1)[-1].lower()
-            got.append((MIME.get(ext, "image/png"), r.content))
-        except Exception as e:
-            notes.append(f"{u[-40:]} {type(e).__name__}")
+        last = ""
+        for attempt in range(RETRY):
+            try:
+                r = requests.get(u, timeout=TIMEOUT, headers=h)
+                if r.status_code != 200:
+                    last = f"HTTP {r.status_code}"
+                    continue
+                n = len(r.content)
+                if n < MIN_BYTES:
+                    last = f"{n}B — 아이콘으로 보여 건너뜀"
+                    break                      # 크기 문제는 재시도해도 같다
+                if n > MAX_BYTES:
+                    last = f"{n / 1e6:.1f}MB — 너무 커서 건너뜀"
+                    break
+                ext = "." + u.split("?")[0].rsplit(".", 1)[-1].lower()
+                got.append((MIME.get(ext, "image/png"), r.content))
+                last = ""
+                break
+            except Exception as e:
+                last = type(e).__name__     # 느린 서버가 있어 한 번 더 시도한다
+        if last:
+            notes.append(f"{u[-40:]} {last}")
     if len(urls) > MAX_IMAGES:
         notes.append(f"이미지 {len(urls)}장 중 앞 {MAX_IMAGES}장만 읽었습니다")
     return got, notes
