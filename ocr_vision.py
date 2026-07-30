@@ -169,21 +169,33 @@ def fetch_images(urls, referer: str = "") -> tuple[list[tuple[str, bytes]], list
     return got, notes
 
 
-def ocr(client, images, model: str) -> tuple[str, str]:
+def ocr(client, images, model: str, urls=None) -> tuple[str, str]:
     """이미지들을 한 번의 호출로 읽는다. (텍스트, 오류) 를 돌려준다.
 
+    images  [(mime, bytes)] — 우리가 받아 둔 이미지. base64 로 넣는다.
+    urls    우리가 못 받았을 때 쓰는 주소 목록. OpenAI 가 직접 받아 간다.
+
     한 번에 넣는 이유 — 급여 표가 두 장에 걸쳐 있으면 따로 읽으면 이어지지 않는다.
+
+    urls 우회로가 필요한 이유 — Streamlit Cloud 서버에서 고용주 이미지 호스트
+    (post.ksjob.co.kr 등)로 접속이 안 된다(ConnectTimeout). 같은 주소가 국내
+    회선에서는 200 으로 받아진다. 서버 위치에 따라 갈리는 문제라 우리 쪽에서
+    고칠 수 없으므로, 받지 못했으면 주소만 넘겨 OpenAI 가 받게 한다.
     """
-    if not images:
+    n = len(images) if images else len(urls or [])
+    if not n:
         return "", "읽을 이미지가 없습니다"
     parts: list[dict] = [{
         "type": "text",
-        "text": f"채용공고 이미지 {len(images)}장입니다. 순서대로 글자를 옮겨 적어 주세요.",
+        "text": f"채용공고 이미지 {n}장입니다. 순서대로 글자를 옮겨 적어 주세요.",
     }]
-    for mime, blob in images:
+    for mime, blob in (images or []):
         b64 = base64.b64encode(blob).decode("ascii")
         parts.append({"type": "image_url",
                       "image_url": {"url": f"data:{mime};base64,{b64}"}})
+    if not images:
+        for u in (urls or [])[:MAX_IMAGES]:
+            parts.append({"type": "image_url", "image_url": {"url": u}})
 
     kw = {
         "messages": [{"role": "system", "content": OCR_SYSTEM},

@@ -462,17 +462,21 @@ def chat_panel(ctx: str, key_ns: str, lang: str) -> None:
     st.markdown("#### " + T(lang, "chat_hdr"))
     st.caption(T(lang, "chat_note"))
 
-    if not hist:
-        sg = suggest(lang)
+    for m in hist:
+        with st.chat_message(m["role"]):
+            st.markdown(m["content"])
+
+    # 질문 버튼은 대화가 시작된 뒤에도 계속 보여준다.
+    # 전에는 `if not hist:` 였는데, 하나 물어보면 나머지 3개가 사라져서
+    # 다음 질문을 누를 수 없었다. 이미 물어본 것만 빼고 입력칸 위에 둔다.
+    asked = {m["content"] for m in hist if m["role"] == "user"}
+    sg = [x for x in suggest(lang) if x not in asked]
+    if sg:
         cols = st.columns(len(sg))
         for i, q0 in enumerate(sg):
             if cols[i].button(q0, key=f"{key_ns}_sg{i}", use_container_width=True):
                 st.session_state[key_ns + "_pending"] = q0
                 st.rerun()
-
-    for m in hist:
-        with st.chat_message(m["role"]):
-            st.markdown(m["content"])
 
     q = st.chat_input(T(lang, "chat_ph"), key=key_ns + "_in")
     pending = st.session_state.pop(key_ns + "_pending", None)
@@ -650,12 +654,12 @@ def ocr_panel(lang: str) -> None:
         import llm_diagnose as L
         with st.spinner(T(lang, "ocr_run")):
             imgs, notes = OV.fetch_images(urls, referer=key)
-            if not imgs:
-                st.warning(T(lang, "ocr_fail"), icon="🖼")
-                for n in notes:
-                    st.caption(n)
-                return
-            text, err = OV.ocr(cli, imgs, L.MODEL_DETECT)
+            # 우리가 못 받았으면 주소만 넘겨 OpenAI 가 직접 받게 한다.
+            # Streamlit Cloud 서버에서 고용주 이미지 호스트로 접속이 안 되는데
+            # (ConnectTimeout) 같은 주소가 국내 회선에서는 200 으로 받아진다.
+            # 서버 위치 문제라 우리 쪽에서 고칠 수 없다.
+            text, err = OV.ocr(cli, imgs, L.MODEL_DETECT,
+                               urls=None if imgs else urls)
         got = {"text": text, "error": err, "notes": notes}
         cache[key] = got
 
