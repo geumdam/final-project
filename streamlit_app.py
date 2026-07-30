@@ -592,6 +592,16 @@ def url_panel(lang: str) -> None:
     # 상세요강 이미지 주소. ocr_panel 이 이걸 보고 버튼을 띄운다.
     st.session_state["p_imgs"] = list(getattr(r, "image_urls", []) or [])
     st.session_state.pop("ocr_cache", None)   # 공고가 바뀌면 캐시 버린다
+
+    # 상세요강이 그림뿐이면 여기서 바로 읽는다. 버튼을 따로 누르게 하면
+    # 그냥 [시작하기] 를 눌러 버려서 본문 없는 상태로 진단이 돌아간다.
+    # 비용은 공고 1건당 한 번뿐이다 — 결과를 링크별로 캐시한다.
+    #
+    # '비었나' 를 0자로 보면 안 된다. 제목만 한 줄 들어 있는 공고가 많다
+    # (실측: 118117666 은 본문이 '배달의 민족 상담원 채용' 13자 + 이미지 2장).
+    # 진단 프롬프트도 30자 미만을 근거 없음으로 보므로 같은 기준을 쓴다.
+    if st.session_state["p_imgs"] and len((r.body or "").strip()) < 30:
+        run_ocr(st.session_state["p_imgs"], url, lang)
     if r.wage_kind and r.wage_amount:
         st.session_state["p_sk"] = r.wage_kind
         st.session_state["p_sv"] = (r.wage_amount / 10000
@@ -625,55 +635,75 @@ def url_panel(lang: str) -> None:
     st.session_state["p_ready"] = False        # 폼을 펼쳐 확인하게 한다
 
 
-def ocr_panel(lang: str) -> None:
-    """상세요강이 그림인 공고에서 그림 속 글자를 읽어 본문에 넣는다.
+def run_ocr(urls: list[str], referer: str, lang: str) -> dict | None:
+    """그림 속 글자를 읽는다. 결과는 공고 링크별로 캐시한다.
 
-    자동으로 돌리지 않는다. 비전 호출은 이미지 장수만큼 비용이 붙으므로
-    사용자가 버튼을 누를 때만 부르고, 결과는 공고 링크별로 캐시해 다시
-    청구되지 않게 한다.
+    캐시가 필요한 이유 — 비전 호출은 이미지 장수만큼 비용이 붙는다.
+    Streamlit 은 조작마다 스크립트를 다시 돌리므로 캐시가 없으면 매번 청구된다.
+    """
+    cache = st.session_state.setdefault("ocr_cache", {})
+    if referer in cache:
+        return cache[referer]
+    cli = openai_client()
+    if not cli:
+        return None                      # 키가 없으면 호출하지 않는다
+    import ocr_vision as OV
+    import llm_diagnose as L
+    with st.spinner(T(lang, "ocr_run")):
+        imgs, notes = OV.fetch_images(urls, referer=referer)
+        # 우리가 못 받았으면 주소만 넘겨 OpenAI 가 직접 받게 한다.
+        # Streamlit Cloud 서버에서 고용주 이미지 호스트로 접속이 안 되는데
+        # (ConnectTimeout) 같은 주소가 국내 회선에서는 200 으로 받아진다.
+        # 서버 위치 문제라 우리 쪽에서 고칠 수 없다.
+        text, err = OV.ocr(cli, imgs, L.MODEL_DETECT,
+                           urls=None if imgs else urls)
+    got = {"text": text, "error": err, "notes": notes}
+    cache[referer] = got
+    # 읽어낸 글을 본문 칸에 넣는다. 진단·대화가 이 값을 근거로 쓴다.
+    if text:
+        st.session_state["p_body"] = text
+    return got
+
+
+def ocr_panel(lang: str) -> None:
+    """그림에서 읽은 결과를 보여준다.
+
+    읽기 자체는 링크를 불러올 때 자동으로 끝난다(url_panel). 여기서는 결과와
+    주의사항만 보여주고, 자동 실행이 안 된 경우(키를 나중에 넣은 경우)에만
+    버튼을 낸다.
     """
     urls = st.session_state.get("p_imgs") or []
     if not urls:
         return
     key = st.session_state.get("p_url", "")
-    cache = st.session_state.setdefault("ocr_cache", {})
+    got = (st.session_state.get("ocr_cache") or {}).get(key)
 
     st.markdown("**" + T(lang, "ocr_hdr") + "**")
     st.caption(T(lang, "ocr_note"))
 
-    if key in cache:
-        got = cache[key]
-    else:
-        cli = openai_client()
-        if not cli:
+    if got is None:
+        # 링크를 불러올 때 키가 없어서 못 돌린 경우다. 지금 키가 있으면 눌러서 실행.
+        if not openai_client():
             st.caption(T(lang, "ocr_key"))
             return
-        if not st.button(T(lang, "ocr_btn").format(n=len(urls)), key="ocr_go"):
-            return
-        import ocr_vision as OV
-        import llm_diagnose as L
-        with st.spinner(T(lang, "ocr_run")):
-            imgs, notes = OV.fetch_images(urls, referer=key)
-            # 우리가 못 받았으면 주소만 넘겨 OpenAI 가 직접 받게 한다.
-            # Streamlit Cloud 서버에서 고용주 이미지 호스트로 접속이 안 되는데
-            # (ConnectTimeout) 같은 주소가 국내 회선에서는 200 으로 받아진다.
-            # 서버 위치 문제라 우리 쪽에서 고칠 수 없다.
-            text, err = OV.ocr(cli, imgs, L.MODEL_DETECT,
-                               urls=None if imgs else urls)
-        got = {"text": text, "error": err, "notes": notes}
-        cache[key] = got
+        if st.button(T(lang, "ocr_btn").format(n=len(urls)), key="ocr_go"):
+            run_ocr(urls, key, lang)
+            st.rerun()
+        return
 
     if got["error"]:
         st.warning(T(lang, "ocr_fail"), icon="🖼")
         st.caption(got["error"][:200])
+        for n in got.get("notes") or []:
+            st.caption(n)
+        if st.button(T(lang, "ocr_btn").format(n=len(urls)), key="ocr_retry"):
+            (st.session_state.get("ocr_cache") or {}).pop(key, None)
+            st.rerun()
         return
     if not got["text"]:
         st.info(T(lang, "ocr_none"), icon="🖼")
         return
 
-    # 본문 칸에 넣는다. 진단·대화가 이 값을 그대로 근거로 쓴다.
-    if st.session_state.get("p_body", "") != got["text"]:
-        st.session_state["p_body"] = got["text"]
     st.success(T(lang, "ocr_ok").format(n=f"{len(got['text']):,}"), icon="🖼")
     st.caption("⚠️ " + T(lang, "ocr_warn"))
     with st.expander(T(lang, "ocr_show")):
