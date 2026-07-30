@@ -20,6 +20,7 @@ from __future__ import annotations
 
 APP: dict[str, dict[str, str]] = {
     "ko": {
+        "url_blocked": '이 공고는 사이트가 수집을 허용하지 않습니다. 공고 화면의 내용을 복사해 아래에 붙여넣으면 똑같이 진단됩니다.',
         "no_company": '(기업명 미상)',
         'ocr_hdr': '이미지에서 글자 읽기',
         'ocr_note': '이 공고는 상세요강이 그림으로 되어 있습니다. 그림 속 글자를 읽으면 급여가 어떻게 구성되는지까지 확인할 수 있습니다.',
@@ -97,6 +98,7 @@ APP: dict[str, dict[str, str]] = {
         "db_count": "건",
     },
     "en": {
+        "url_blocked": 'The site does not allow this posting to be collected. Copy the text from the posting page and paste it below — the diagnosis works the same way.',
         "no_company": '(company not shown)',
         'ocr_hdr': 'Read text from the images',
         'ocr_note': "This posting's details are an image. Reading the text inside lets us check how the pay is actually made up.",
@@ -179,6 +181,7 @@ APP: dict[str, dict[str, str]] = {
         "db_count": "postings",
     },
     "zh": {
+        "url_blocked": '该网站不允许采集这条公告。请从公告页面复制内容粘贴到下方，诊断效果完全相同。',
         "no_company": '(未公开公司名)',
         'ocr_hdr': '读取图片中的文字',
         'ocr_note': '该公告的详细内容是图片。读取图片中的文字后，还能确认工资的具体构成。',
@@ -257,6 +260,7 @@ APP: dict[str, dict[str, str]] = {
         "db_count": "条",
     },
     "vi": {
+        "url_blocked": 'Trang tuyển dụng không cho phép thu thập tin này. Hãy sao chép nội dung từ trang tin và dán vào bên dưới — kết quả chẩn đoán vẫn như vậy.',
         "no_company": '(không có tên công ty)',
         'ocr_hdr': 'Đọc chữ trong hình ảnh',
         'ocr_note': 'Chi tiết của tin này là hình ảnh. Đọc chữ trong hình giúp kiểm tra được lương thực sự gồm những khoản nào.',
@@ -341,6 +345,7 @@ APP: dict[str, dict[str, str]] = {
         "db_count": "tin",
     },
     "ja": {
+        "url_blocked": 'このサイトはこの求人の収集を許可していません。求人ページの内容をコピーして下に貼り付ければ、同じように診断できます。',
         "no_company": '(社名非公開)',
         'ocr_hdr': '画像から文字を読み取る',
         'ocr_note': 'この求人は詳細が画像です。画像内の文字を読むと、給与の内訳まで確認できます。',
@@ -420,6 +425,7 @@ APP: dict[str, dict[str, str]] = {
         "db_count": "件",
     },
     "es": {
+        "url_blocked": 'El sitio no permite recopilar esta oferta. Copia el texto de la página de la oferta y pégalo abajo: el diagnóstico funciona igual.',
         "no_company": '(empresa no indicada)',
         'ocr_hdr': 'Leer el texto de las imágenes',
         'ocr_note': 'Los detalles de esta oferta son una imagen. Leer el texto permite comprobar cómo se compone realmente el salario.',

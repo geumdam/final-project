@@ -570,8 +570,14 @@ def url_panel(lang: str) -> None:
             return
 
     if not r.ok:
-        st.warning(T(lang, "url_fail"), icon="🔗")
-        st.caption(r.error[:200])
+        # 사이트가 수집을 거부한 공고와 기술적 실패를 구분해서 알린다.
+        # 전에는 둘 다 "링크를 읽지 못했습니다" 로 묶고 개발자용 한국어 사유를
+        # 그대로 붙였다. 차단은 고칠 수 있는 오류가 아니므로 안내가 달라야 한다.
+        if (r.error or "").startswith("BLOCKED:"):
+            st.info(T(lang, "url_blocked"), icon="🚫")
+        else:
+            st.warning(T(lang, "url_fail"), icon="🔗")
+            st.caption(r.error[:200])
         return
 
     # 폼 위젯의 세션 값을 직접 채운다. 위젯 키와 이름이 같아야 반영된다.
@@ -723,7 +729,9 @@ def main() -> None:
         st.markdown("### 🌐 Language · 语言 · 言語")
         codes = list(LANGUAGES)
         lang = st.selectbox("Language", codes,
-                            index=codes.index("zh") if "zh" in codes else 0,
+                            # 기본은 한국어. 중국어로 두었더니 새로 들어온
+                            # 사람이 매번 언어부터 바꿔야 했다.
+                            index=codes.index("ko") if "ko" in codes else 0,
                             format_func=lambda c: LANGUAGES[c],
                             label_visibility="collapsed")
         st.divider()

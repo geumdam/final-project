@@ -292,7 +292,7 @@ def crawl_alba(url: str) -> FetchResult:
             view = payload.get("viewData") or {}
             if payload.get("crawlerBlocked") or view.get("crawlingBlock"):
                 return FetchResult(ok=False, source_url=url,
-                                   error="이 공고는 사이트가 수집을 차단했습니다")
+                                   error="BLOCKED: 사이트가 이 공고에 crawlerBlocked 를 표시했습니다")
             if not view:
                 return FetchResult(ok=False, source_url=url,
                                    error="마감·삭제된 공고로 보입니다")
